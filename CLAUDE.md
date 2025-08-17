@@ -11,13 +11,14 @@ See `ARCHITECTURE.md` for complete technical architecture documentation includin
 - Data flow diagrams and performance considerations
 
 ## Key Technologies
-- **Database**: Neon (Serverless PostgreSQL)
-- **Storage**: Google Cloud Storage (GCS)
-- **Audio Processing**: FFmpeg, Silero VAD
+- **Orchestration**: Temporal workflows (async)
+- **Database**: Neon (Serverless PostgreSQL) with AsyncPG
+- **Storage**: Google Cloud Storage (GCS) with async operations
+- **Audio Processing**: FFmpeg with async subprocess, Silero VAD
 - **Speech Recognition**: WhisperX/Whisper
 - **Translation**: Google Translate v3, GPT-4o
 - **Voice Synthesis**: ElevenLabs (Voice Cloning + TTS)
-- **Orchestration**: Temporal workflows
+- **Data Models**: Pydantic for type safety
 
 ## Development Guidelines
 
@@ -26,6 +27,7 @@ See `ARCHITECTURE.md` for complete technical architecture documentation includin
 - Use established libraries and frameworks already present
 - Implement proper error handling and retry logic
 - Ensure idempotent operations for workflow reliability
+- **Comments**: Use single-line format that is clear, concise, and professional
 
 ### Testing
 - Test each pipeline stage independently
@@ -34,16 +36,93 @@ See `ARCHITECTURE.md` for complete technical architecture documentation includin
 - Verify audio/video sync accuracy
 
 ### Common Commands
+
+#### Local Development
 ```bash
-# Audio extraction
+# Start Temporal server
+temporal server start-dev
+
+# Run local worker
+python worker_local.py
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Audio extraction (direct FFmpeg)
 ffmpeg -i input.mp4 -ac 1 -ar 16000 audio.wav
-
-# Run tests (when implemented)
-# Add specific test commands here
-
-# Build and lint (when implemented)  
-# Add specific build/lint commands here
 ```
+
+#### Temporal Workflow Operations
+```bash
+# Submit audio extraction workflow
+python -c "import asyncio; from workflows.audio_extraction_workflow import AudioExtractionWorkflow; asyncio.run(submit_workflow())"
+
+# Query workflow status
+temporal workflow show --workflow-id <workflow-id>
+
+# List running workflows
+temporal workflow list
+```
+
+#### Testing and Development
+```bash
+# Install test dependencies
+pip install -r requirements.txt
+
+# Run all tests
+pytest
+
+# Run specific test categories
+pytest -m unit          # Unit tests only (mocked)
+pytest -m activity      # Activity tests only
+pytest -m integration   # Integration tests (require FFmpeg, real files)
+pytest -m "not integration"  # Skip integration tests (CI/fast testing)
+
+# Run tests with coverage
+pytest --cov=activities --cov=workflows --cov=shared --cov=config
+
+# Run tests in parallel
+pytest -n auto
+
+# Run specific test files
+pytest tests/activities/test_audio_extraction.py -v      # Unit tests (mocked)
+pytest tests/activities/test_audio_extraction_real.py -v # Real file tests
+
+# Format code
+black .
+
+# Type checking
+mypy .
+
+# Linting
+flake8 .
+```
+
+#### Test Structure
+```
+tests/
+├── conftest.py                        # Test configuration and fixtures
+├── activities/                        # Activity tests
+│   ├── test_audio_extraction.py       # Unit tests (mocked GCS/DB)
+│   └── test_audio_extraction_real.py  # Integration tests (real files/FFmpeg)
+├── workflows/                         # Workflow tests
+├── shared/                            # Shared component tests
+│   └── test_config.py
+└── fixtures/                          # Test data and files
+```
+
+#### Test Categories
+
+**Unit Tests** (`test_audio_extraction.py`):
+- Fast, isolated tests with mocked dependencies
+- No external dependencies (GCS, FFmpeg, real files)
+- Good for CI/CD and rapid development
+
+**Integration Tests** (`test_audio_extraction_real.py`):
+- Real GCS bucket operations and FFmpeg processing
+- Creates actual test videos and uploads to GCS
+- Requires FFmpeg installation and GCS credentials
+- Slower but tests real-world scenarios with actual cloud storage
 
 ## Pipeline Stages Summary
 1. **Audio Extraction** - Extract clean audio from video
@@ -58,10 +137,39 @@ ffmpeg -i input.mp4 -ac 1 -ar 16000 audio.wav
 10. **Subtitles** - Generate text tracks for accessibility
 
 ## Development Notes
+
+### Async/Await Patterns
+- All activities and workflows use async/await for non-blocking operations
+- Database operations use AsyncPG connection pooling
+- File operations use aiofiles for async I/O
+- GCS operations wrapped in asyncio.to_thread() for thread-safe execution
+- FFmpeg subprocess operations use asyncio.create_subprocess_exec()
+
+### Temporal Workflow Patterns
+- Activities are stateless and idempotent
+- Workflows handle orchestration and state management
+- Retry policies configured at activity level
+- Signal handling for workflow monitoring and cancellation
+- Proper timeout handling for long-running operations
+
+### Error Handling
+- Activities log errors to database with structured error details
+- Workflows implement graceful failure handling with cleanup
+- Retry policies with exponential backoff for transient failures
+- Circuit breaker patterns for external service calls
+
+### Performance Optimization
 - Process segments in parallel for performance
-- Implement proper rate limiting for external APIs
+- Connection pooling for database operations
+- Async file operations to prevent blocking
+- Resource cleanup in finally blocks
+- Memory-efficient streaming for large files
+
+### Production Considerations
 - Store intermediate artifacts in GCS for debugging and reprocessing
 - Use Neon database to track processing status and store asset links
 - Use deterministic file naming for idempotent operations
 - Handle failures gracefully with segment-level retries
+- Implement health checks for all external dependencies
+- Structured logging for monitoring and alerting
 - Leverage Google Cloud ecosystem for seamless service integration
