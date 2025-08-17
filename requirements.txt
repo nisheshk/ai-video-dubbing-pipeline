@@ -13,6 +13,13 @@ psycopg2-binary==2.9.7
 # Audio Processing
 ffmpeg-python==0.2.0
 
+# Speech Processing / VAD (Voice Activity Detection)
+torch==2.1.1
+torchaudio==2.1.1
+silero-vad==4.0.1
+librosa==0.10.1
+soundfile==0.12.1
+
 # Environment Management
 python-dotenv==1.0.0
 

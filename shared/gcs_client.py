@@ -1,7 +1,9 @@
 """Async Google Cloud Storage client for AI dubbing pipeline."""
 
 import asyncio
+import json
 import logging
+import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any
 import aiofiles
@@ -22,13 +24,13 @@ class AsyncGCSClient:
         self.config = config
         self.client: Optional[storage.Client] = None
         self.bucket: Optional[storage.Bucket] = None
+        self._temp_creds_file: Optional[str] = None  # Track temporary credential file
         
     async def connect(self) -> None:
         """Establish connection to Google Cloud Storage."""
         try:
             # Set up authentication if credentials are provided
-            if self.config.google_application_credentials:
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = self.config.google_application_credentials
+            await self._setup_authentication()
                 
             # Initialize client in thread pool since it's sync
             self.client = await asyncio.to_thread(
@@ -47,6 +49,7 @@ class AsyncGCSClient:
             
         except Exception as e:
             logger.error(f"Failed to connect to GCS: {e}")
+            await self._cleanup_temp_credentials()  # Cleanup on failure
             raise
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
@@ -204,3 +207,69 @@ class AsyncGCSClient:
         except Exception as e:
             logger.error(f"Error listing files with prefix {prefix}: {e}")
             raise
+    
+    async def disconnect(self) -> None:
+        """Disconnect and cleanup resources."""
+        await self._cleanup_temp_credentials()
+        self.client = None
+        self.bucket = None
+    
+    async def _setup_authentication(self) -> None:
+        """Set up Google Cloud authentication."""
+        if not self.config.google_application_credentials:
+            # Use Application Default Credentials
+            logger.info("Using Application Default Credentials")
+            return
+            
+        creds_value = self.config.google_application_credentials
+        
+        # Check if it's a file path
+        if os.path.isfile(creds_value):
+            logger.info("Using credential file path")
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_value
+            return
+            
+        # Assume it's JSON content
+        try:
+            # Validate JSON format
+            if isinstance(creds_value, str):
+                creds_data = json.loads(creds_value)
+            else:
+                creds_data = creds_value
+                
+            # Validate required fields
+            required_fields = ["type", "project_id", "private_key", "client_email"]
+            missing_fields = [field for field in required_fields if field not in creds_data]
+            if missing_fields:
+                raise ValueError(f"Missing required credential fields: {missing_fields}")
+            
+            # Create temporary credential file
+            fd, temp_path = tempfile.mkstemp(suffix='.json', prefix='gcp_creds_')
+            try:
+                with os.fdopen(fd, 'w') as f:
+                    json.dump(creds_data, f)
+                self._temp_creds_file = temp_path
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_path
+                logger.info("Created temporary credential file from JSON content")
+            except Exception:
+                # Clean up file descriptor if json.dump fails
+                os.close(fd)
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                raise
+                
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON format in credentials: {e}")
+        except Exception as e:
+            raise ValueError(f"Failed to setup credentials: {e}")
+    
+    async def _cleanup_temp_credentials(self) -> None:
+        """Clean up temporary credential file if it exists."""
+        if self._temp_creds_file and os.path.exists(self._temp_creds_file):
+            try:
+                os.unlink(self._temp_creds_file)
+                logger.debug(f"Cleaned up temporary credential file: {self._temp_creds_file}")
+            except Exception as e:
+                logger.warning(f"Failed to cleanup temporary credential file: {e}")
+            finally:
+                self._temp_creds_file = None

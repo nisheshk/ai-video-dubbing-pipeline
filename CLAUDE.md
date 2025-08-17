@@ -52,6 +52,21 @@ pip install -r requirements.txt
 ffmpeg -i input.mp4 -ac 1 -ar 16000 audio.wav
 ```
 
+#### Temporal Cloud Operations
+```bash
+# Start cloud worker (processes workflows from Temporal Cloud)
+source .env.cloud && python worker_cloud.py
+
+# Trigger workflow for test video (a82c5c2a-3099-476d-937b-caf03bcc4043)
+source .env.cloud && echo "1" | python client_cloud.py
+
+# Trigger workflow and wait for completion
+source .env.cloud && echo -e "1\n1" | python client_cloud.py
+
+# Environment setup for cloud operations
+cp .env.test .env.cloud  # Copy and customize cloud credentials
+```
+
 #### Temporal Workflow Operations
 ```bash
 # Submit audio extraction workflow
@@ -88,6 +103,9 @@ pytest -n auto
 pytest tests/activities/test_audio_extraction.py -v      # Unit tests (mocked)
 pytest tests/activities/test_audio_extraction_real.py -v # Real file tests
 
+# Run integration tests with specific environment
+pytest tests/activities/test_audio_extraction_real.py -v --env-file .env.test
+
 # Format code
 black .
 
@@ -120,9 +138,11 @@ tests/
 
 **Integration Tests** (`test_audio_extraction_real.py`):
 - Real GCS bucket operations and FFmpeg processing
-- Creates actual test videos and uploads to GCS
+- Uses existing test video: `gs://dubbing-pipeline/a82c5c2a-3099-476d-937b-caf03bcc4043/test_video1.mp4`
 - Requires FFmpeg installation and GCS credentials
 - Slower but tests real-world scenarios with actual cloud storage
+- Environment variables: `GOOGLE_CLOUD_CREDENTIALS` (JSON) or `GOOGLE_APPLICATION_CREDENTIALS` (file path)
+- Real PostgreSQL database logging (no primary key constraints for testing)
 
 ## Pipeline Stages Summary
 1. **Audio Extraction** - Extract clean audio from video

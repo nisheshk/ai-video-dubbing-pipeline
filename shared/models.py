@@ -132,6 +132,55 @@ class SegmentMetadata(BaseModel):
     confidence_score: Optional[float] = Field(default=None, description="Segmentation confidence")
 
 
+class SpeechSegmentationRequest(BaseModel):
+    """Request for speech segmentation (VAD) processing."""
+    
+    video_id: str = Field(description="Video identifier")
+    gcs_audio_path: str = Field(description="GCS path to extracted audio file")
+    
+    # VAD Configuration
+    vad_threshold: float = Field(default=0.5, description="VAD speech detection threshold")
+    min_speech_duration_ms: int = Field(default=1000, description="Minimum speech segment duration")
+    max_segment_duration_s: int = Field(default=30, description="Maximum segment duration")
+    min_silence_gap_ms: int = Field(default=500, description="Minimum silence gap between segments")
+    speech_padding_ms: int = Field(default=50, description="Padding around speech segments")
+
+
+class SpeechSegmentationResult(BaseModel):
+    """Result from speech segmentation processing."""
+    
+    video_id: str = Field(description="Video identifier")
+    success: bool = Field(description="Whether segmentation succeeded")
+    total_segments: int = Field(description="Number of segments created")
+    total_speech_duration: float = Field(description="Total speech duration in seconds")
+    processing_time_seconds: float = Field(description="Processing time")
+    
+    # Segment data
+    segments: List[Dict[str, Any]] = Field(default_factory=list, description="Segment metadata list")
+    gcs_manifest_path: str = Field(default="", description="GCS path to segment manifest JSON")
+    gcs_segments_folder: str = Field(default="", description="GCS folder containing segment audio files")
+    
+    # Quality metrics
+    speech_to_silence_ratio: float = Field(description="Ratio of speech to total duration")
+    avg_segment_duration: float = Field(description="Average segment duration")
+    confidence_scores: List[float] = Field(default_factory=list, description="VAD confidence scores")
+    
+    error_message: str = Field(default="", description="Error message if failed")
+
+
+class AudioSegment(BaseModel):
+    """Individual audio segment data."""
+    
+    id: str = Field(description="Segment UUID")
+    segment_index: int = Field(description="Sequential segment index")
+    start_time: float = Field(description="Start time in seconds")
+    end_time: float = Field(description="End time in seconds") 
+    duration: float = Field(description="Segment duration in seconds")
+    confidence_score: float = Field(description="VAD confidence score")
+    gcs_audio_path: str = Field(description="GCS path to segment audio file")
+    status: ProcessingStatus = Field(default=ProcessingStatus.PENDING, description="Processing status")
+
+
 class DubbingPipelineRequest(BaseModel):
     """Complete dubbing pipeline request."""
     

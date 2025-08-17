@@ -36,12 +36,12 @@ def test_config() -> DubbingConfig:
             google_application_credentials=None,
             gcs_bucket_name="test-bucket",
             
-            # Database
-            neon_database_url="postgresql://test:test@localhost:5432/test",
+            # Database - Use real PostgreSQL for integration tests
+            neon_database_url="postgresql://postgres:Test%40123@localhost:5432/postgres",
             neon_host="localhost",
-            neon_database="test",
-            neon_username="test", 
-            neon_password="test",
+            neon_database="postgres",
+            neon_username="postgres", 
+            neon_password="Test@123",
             
             # Temporal
             temporal_cloud_namespace="test-namespace",
@@ -174,7 +174,7 @@ def sample_audio_metadata() -> Dict[str, Any]:
     }
 
 
-@pytest.fixture
+@pytest_asyncio.fixture  
 async def temp_video_file(test_config: DubbingConfig) -> AsyncGenerator[str, None]:
     """Create a temporary test video file."""
     temp_dir = Path(test_config.temp_storage_path)
@@ -194,7 +194,7 @@ async def temp_video_file(test_config: DubbingConfig) -> AsyncGenerator[str, Non
         temp_video.unlink()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def temp_audio_file(test_config: DubbingConfig) -> AsyncGenerator[str, None]:
     """Create a temporary test audio file."""
     temp_dir = Path(test_config.temp_storage_path)

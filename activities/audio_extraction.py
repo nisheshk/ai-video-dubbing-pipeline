@@ -159,6 +159,7 @@ class AudioExtractionActivities:
             
             # Create audio output path
             temp_dir = Path(self.config.temp_storage_path) / video_id
+            temp_dir.mkdir(parents=True, exist_ok=True)
             audio_path = str(temp_dir / "audio.wav")
             
             # Remove existing audio file if it exists
@@ -177,8 +178,9 @@ class AudioExtractionActivities:
             )
             
             # Run FFmpeg asynchronously
+            ffmpeg_args = ffmpeg.compile(stream, overwrite_output=True)
             process = await asyncio.create_subprocess_exec(
-                'ffmpeg', *ffmpeg.compile(stream, overwrite_output=True),
+                *ffmpeg_args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )

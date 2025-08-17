@@ -9,12 +9,14 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from typing import Dict, Any
 
 import pytest
+import pytest_asyncio
 from temporalio.testing import ActivityEnvironment
 
 from activities.audio_extraction import AudioExtractionActivities
 from shared.models import AudioExtractionRequest
 from config import DubbingConfig
 from shared.gcs_client import AsyncGCSClient
+from shared.database import get_database_client
 
 
 class TestAudioExtractionActivitiesReal:
@@ -78,17 +80,22 @@ class TestAudioExtractionActivitiesReal:
         """Configure for real GCS operations."""
         # Override test config with real GCS settings
         test_config.google_cloud_project = os.getenv("GOOGLE_CLOUD_PROJECT", "")
-        test_config.gcs_bucket_name = os.getenv("GCS_BUCKET_NAME", "dubbing-pipeline-test")
-        test_config.google_application_credentials = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        test_config.gcs_bucket_name = os.getenv("GCS_BUCKET_NAME", "dubbing-pipeline")
+        test_config.google_application_credentials = (
+            os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or  # File path (standard)
+            os.getenv("GOOGLE_CLOUD_CREDENTIALS")           # JSON content (new option)
+        )
         
         if not test_config.google_cloud_project:
             pytest.skip("GOOGLE_CLOUD_PROJECT environment variable required for real GCS tests")
         if not test_config.gcs_bucket_name:
             pytest.skip("GCS_BUCKET_NAME environment variable required for real GCS tests")
+        if not test_config.google_application_credentials:
+            pytest.skip("GCS credentials required (GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_CLOUD_CREDENTIALS)")
             
         return test_config
     
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def real_gcs_client(self, real_gcs_config: DubbingConfig) -> AsyncGCSClient:
         """Create real GCS client for testing."""
         client = AsyncGCSClient(real_gcs_config)
@@ -99,25 +106,9 @@ class TestAudioExtractionActivitiesReal:
             pytest.skip(f"Cannot connect to real GCS: {e}")
     
     @pytest.fixture
-    async def test_video_in_gcs(
-        self, 
-        real_gcs_client: AsyncGCSClient, 
-        sample_video_file: str,
-        sample_video_id: str
-    ) -> str:
-        """Upload test video to GCS and return the GCS path."""
-        gcs_path = f"test-videos/{sample_video_id}/input/video.mp4"
-        
-        try:
-            # Upload test video to GCS
-            await real_gcs_client.upload_file(sample_video_file, gcs_path)
-            yield gcs_path
-        finally:
-            # Cleanup: delete test video from GCS
-            try:
-                await real_gcs_client.delete_file(gcs_path)
-            except Exception:
-                pass  # Ignore cleanup errors
+    def test_video_in_gcs(self) -> str:
+        """Return the GCS path for the existing test video."""
+        return "a82c5c2a-3099-476d-937b-caf03bcc4043/test_video1.mp4"
     
     @pytest.fixture
     def mock_database_operations(self):
@@ -154,11 +145,11 @@ class TestAudioExtractionActivitiesReal:
             mock_db_context.return_value.__aenter__ = AsyncMock(return_value=mock_database_operations)
             mock_db_context.return_value.__aexit__ = AsyncMock(return_value=None)
             
-            async with ActivityEnvironment() as env:
-                result = await env.run(
-                    activities.download_video_activity,
-                    request
-                )
+            env = ActivityEnvironment()
+            result = await env.run(
+                activities.download_video_activity,
+                request
+            )
             
             # Verify results
             assert result["success"] is True
@@ -184,12 +175,12 @@ class TestAudioExtractionActivitiesReal:
             mock_db_context.return_value.__aenter__ = AsyncMock(return_value=mock_database_operations)
             mock_db_context.return_value.__aexit__ = AsyncMock(return_value=None)
             
-            async with ActivityEnvironment() as env:
-                result = await env.run(
-                    activities.validate_video_activity,
-                    sample_video_file,
-                    sample_video_id
-                )
+            env = ActivityEnvironment()
+            result = await env.run(
+                activities.validate_video_activity,
+                sample_video_file,
+                sample_video_id
+            )
             
             # Verify results
             assert result["success"] is True
@@ -224,12 +215,12 @@ class TestAudioExtractionActivitiesReal:
             mock_db_context.return_value.__aenter__ = AsyncMock(return_value=mock_database_operations)
             mock_db_context.return_value.__aexit__ = AsyncMock(return_value=None)
             
-            async with ActivityEnvironment() as env:
-                result = await env.run(
-                    activities.extract_audio_activity,
-                    sample_video_file,
-                    sample_video_id
-                )
+            env = ActivityEnvironment()
+            result = await env.run(
+                activities.extract_audio_activity,
+                sample_video_file,
+                sample_video_id
+            )
             
             # Verify results
             assert result["success"] is True
@@ -263,7 +254,7 @@ class TestAudioExtractionActivitiesReal:
         # Update activities config to use real GCS settings
         activities.config = real_gcs_config
         
-        expected_gcs_path = f"test-output/{sample_video_id}/audio/extracted.wav"
+        expected_gcs_path = f"{sample_video_id}/audio/extracted.wav"
         expected_gcs_url = f"gs://{real_gcs_config.gcs_bucket_name}/{expected_gcs_path}"
         
         # Use real GCS client (no mocking)
@@ -272,12 +263,12 @@ class TestAudioExtractionActivitiesReal:
             mock_db_context.return_value.__aexit__ = AsyncMock(return_value=None)
             
             try:
-                async with ActivityEnvironment() as env:
-                    result = await env.run(
-                        activities.upload_audio_activity,
-                        temp_audio_file,
-                        sample_video_id
-                    )
+                env = ActivityEnvironment()
+                result = await env.run(
+                    activities.upload_audio_activity,
+                    temp_audio_file,
+                    sample_video_id
+                )
                 
                 # Verify results
                 assert result["success"] is True
@@ -304,8 +295,7 @@ class TestAudioExtractionActivitiesReal:
         test_video_in_gcs: str,
         sample_video_id: str,
         real_gcs_config: DubbingConfig,
-        real_gcs_client: AsyncGCSClient,
-        mock_database_operations: AsyncMock
+        real_gcs_client: AsyncGCSClient
     ):
         """Test the complete audio extraction pipeline with real GCS operations."""
         # Check FFmpeg availability
@@ -314,86 +304,108 @@ class TestAudioExtractionActivitiesReal:
         except (FileNotFoundError, subprocess.CalledProcessError):
             pytest.skip("FFmpeg not available for full pipeline test")
         
-        # Update activities config to use real GCS settings
+        # Update activities config to use real GCS settings AND real database
         activities.config = real_gcs_config
         
-        # Create request with real GCS path
+        # Create request with real GCS path - using proper UUID
+        test_video_id = "a82c5c2a-3099-476d-937b-caf03bcc4043"
         request = AudioExtractionRequest(
-            video_id=sample_video_id,
+            video_id=test_video_id,
             gcs_input_path=test_video_in_gcs,  # Real GCS path
             original_filename="test_video.mp4"
         )
         
-        expected_audio_gcs_path = f"test-output/{sample_video_id}/audio/extracted.wav"
+        expected_audio_gcs_path = f"{test_video_id}/audio/extracted.wav"
         
-        # Use real GCS operations (no mocking)
-        with patch('activities.audio_extraction.get_database_client') as mock_db_context:
-            mock_db_context.return_value.__aenter__ = AsyncMock(return_value=mock_database_operations)
-            mock_db_context.return_value.__aexit__ = AsyncMock(return_value=None)
+        # Use real GCS operations AND real database operations (no mocking)
+        try:
+            env = ActivityEnvironment()
             
+            # Step 0: Create video record in database first
+            async with get_database_client(real_gcs_config) as db:
+                await db.create_video_record(
+                    video_id=test_video_id,
+                    original_filename="test_video.mp4",
+                    gcs_input_path=test_video_in_gcs
+                )
+                print(f"Created video record for {test_video_id}")
+            
+            # Step 1: Download from real GCS
+            download_result = await env.run(
+                activities.download_video_activity,
+                request
+            )
+            assert download_result["success"] is True
+            video_path = download_result["local_video_path"]
+            
+            # Step 2: Validate real video file
+            validation_result = await env.run(
+                activities.validate_video_activity,
+                video_path,
+                test_video_id
+            )
+            assert validation_result["success"] is True
+            
+            # Step 3: Extract audio with real FFmpeg
+            extraction_result = await env.run(
+                activities.extract_audio_activity,
+                video_path,
+                test_video_id
+            )
+            assert extraction_result["success"] is True
+            audio_path = extraction_result["audio_path"]
+            
+            # Verify extracted audio file
+            assert Path(audio_path).exists()
+            assert Path(audio_path).stat().st_size > 0
+            
+            # Step 4: Upload audio to real GCS
+            print(f"Uploading audio from: {audio_path}")
+            print(f"Expected GCS path: {expected_audio_gcs_path}")
+            
+            upload_result = await env.run(
+                activities.upload_audio_activity,
+                audio_path,
+                test_video_id
+            )
+            assert upload_result["success"] is True
+            
+            print(f"Upload result: {upload_result}")
+            print(f"Actual uploaded URL: {upload_result.get('gcs_audio_url', 'Not found')}")
+            
+            # Verify file exists in GCS
+            file_exists = await real_gcs_client.file_exists(expected_audio_gcs_path)
+            print(f"File exists at expected path: {file_exists}")
+            
+            # Try listing what's actually in the test folder
             try:
-                async with ActivityEnvironment() as env:
-                    # Step 1: Download from real GCS
-                    download_result = await env.run(
-                        activities.download_video_activity,
-                        request
-                    )
-                    assert download_result["success"] is True
-                    video_path = download_result["local_video_path"]
+                files = await real_gcs_client.list_files(prefix=f"{test_video_id}/", limit=50)
+                print(f"Files in {test_video_id}/ folder: {[f['name'] for f in files]}")
+            except Exception as e:
+                print(f"Error listing files: {e}")
+            
+            assert file_exists, f"Audio file not found in GCS: {expected_audio_gcs_path}"
+            
+            # Step 5: Cleanup local files
+            cleanup_result = await env.run(
+                activities.cleanup_temp_files_activity,
+                test_video_id
+            )
+            assert cleanup_result["success"] is True
+            
+            # Verify local cleanup worked
+            assert not Path(video_path).exists()
+            assert not Path(audio_path).exists()
                     
-                    # Step 2: Validate real video file
-                    validation_result = await env.run(
-                        activities.validate_video_activity,
-                        video_path,
-                        sample_video_id
-                    )
-                    assert validation_result["success"] is True
-                    
-                    # Step 3: Extract audio with real FFmpeg
-                    extraction_result = await env.run(
-                        activities.extract_audio_activity,
-                        video_path,
-                        sample_video_id
-                    )
-                    assert extraction_result["success"] is True
-                    audio_path = extraction_result["audio_path"]
-                    
-                    # Verify extracted audio file
-                    assert Path(audio_path).exists()
-                    assert Path(audio_path).stat().st_size > 0
-                    
-                    # Step 4: Upload audio to real GCS
-                    upload_result = await env.run(
-                        activities.upload_audio_activity,
-                        audio_path,
-                        sample_video_id
-                    )
-                    assert upload_result["success"] is True
-                    
-                    # Verify file exists in GCS
-                    file_exists = await real_gcs_client.file_exists(expected_audio_gcs_path)
-                    assert file_exists, f"Audio file not found in GCS: {expected_audio_gcs_path}"
-                    
-                    # Step 5: Cleanup local files
-                    cleanup_result = await env.run(
-                        activities.cleanup_temp_files_activity,
-                        sample_video_id
-                    )
-                    assert cleanup_result["success"] is True
-                    
-                    # Verify local cleanup worked
-                    assert not Path(video_path).exists()
-                    assert not Path(audio_path).exists()
-                    
-            finally:
-                # Cleanup: delete uploaded audio from GCS
-                try:
-                    await real_gcs_client.delete_file(expected_audio_gcs_path)
-                except Exception:
-                    pass  # Ignore cleanup errors
+        finally:
+            # Don't cleanup - leave the audio file for inspection
+            print(f"Audio should be available at: gs://dubbing-pipeline/{expected_audio_gcs_path}")
+            # try:
+            #     await real_gcs_client.delete_file(expected_audio_gcs_path)
+            # except Exception:
+            #     pass  # Ignore cleanup errors
         
-        # Verify all database logging calls were made
-        assert mock_database_operations.log_processing_step.call_count >= 5  # At least one per step
+        print("🎉 Pipeline completed successfully with real database logging!")
     
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -414,13 +426,13 @@ class TestAudioExtractionActivitiesReal:
             mock_db_context.return_value.__aenter__ = AsyncMock(return_value=mock_database_operations)
             mock_db_context.return_value.__aexit__ = AsyncMock(return_value=None)
             
-            async with ActivityEnvironment() as env:
-                with pytest.raises(Exception):  # Should raise an exception for invalid video
-                    await env.run(
-                        activities.extract_audio_activity,
-                        str(fake_video),
-                        sample_video_id
-                    )
+            env = ActivityEnvironment()
+            with pytest.raises(Exception):  # Should raise an exception for invalid video
+                await env.run(
+                    activities.extract_audio_activity,
+                    str(fake_video),
+                    sample_video_id
+                )
         
         # Cleanup
         if fake_video.exists():

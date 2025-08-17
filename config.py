@@ -14,7 +14,7 @@ class DubbingConfig:
     
     # Google Cloud Storage
     google_cloud_project: str
-    google_application_credentials: Optional[str]
+    google_application_credentials: Optional[str]  # File path or JSON content
     gcs_bucket_name: str
     
     # Neon PostgreSQL Database
@@ -72,7 +72,10 @@ class DubbingConfig:
         return cls(
             # Google Cloud Storage
             google_cloud_project=os.getenv("GOOGLE_CLOUD_PROJECT", ""),
-            google_application_credentials=os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+            google_application_credentials=(
+                os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or  # File path (standard)
+                os.getenv("GOOGLE_CLOUD_CREDENTIALS")           # JSON content (new option)
+            ),
             gcs_bucket_name=os.getenv("GCS_BUCKET_NAME", "dubbing-pipeline"),
             
             # Neon PostgreSQL Database

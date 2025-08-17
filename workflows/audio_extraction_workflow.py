@@ -19,7 +19,8 @@ class AudioExtractionWorkflow:
     """Complete audio extraction workflow with error handling and monitoring."""
     
     def __init__(self) -> None:
-        self.config = DubbingConfig.from_env()
+        # Don't load config in workflow - workflows must be deterministic
+        # Config will be loaded in activities where file operations are allowed
         self.processing_status: str = "pending"
         self.current_step: str = "initialization"
         self.error_message: Optional[str] = None
@@ -48,9 +49,9 @@ class AudioExtractionWorkflow:
             
             # Define retry policy for activities
             retry_policy = RetryPolicy(
-                initial_interval=timedelta(seconds=self.config.retry_delay_seconds),
+                initial_interval=timedelta(seconds=1),
                 maximum_interval=timedelta(seconds=30),
-                maximum_attempts=self.config.max_retries,
+                maximum_attempts=3,
                 backoff_coefficient=2.0
             )
             
@@ -76,8 +77,7 @@ class AudioExtractionWorkflow:
             
             validation_result = await workflow.execute_activity(
                 audio_extraction_activities.validate_video_activity,
-                local_video_path,
-                request.video_id,
+                args=[local_video_path, request.video_id],
                 start_to_close_timeout=timedelta(minutes=2),
                 retry_policy=retry_policy
             )
@@ -93,8 +93,7 @@ class AudioExtractionWorkflow:
             
             extraction_result = await workflow.execute_activity(
                 audio_extraction_activities.extract_audio_activity,
-                local_video_path,
-                request.video_id,
+                args=[local_video_path, request.video_id],
                 start_to_close_timeout=timedelta(minutes=15),
                 retry_policy=retry_policy
             )
@@ -111,8 +110,7 @@ class AudioExtractionWorkflow:
             
             upload_result = await workflow.execute_activity(
                 audio_extraction_activities.upload_audio_activity,
-                local_audio_path,
-                request.video_id,
+                args=[local_audio_path, request.video_id],
                 start_to_close_timeout=timedelta(minutes=10),
                 retry_policy=retry_policy
             )
@@ -139,7 +137,7 @@ class AudioExtractionWorkflow:
                 self.current_step = "cleanup"
                 await workflow.execute_activity(
                     audio_extraction_activities.cleanup_temp_files_activity,
-                    request.video_id,
+                    args=[request.video_id],
                     start_to_close_timeout=timedelta(minutes=1)
                 )
             except Exception as e:
@@ -171,7 +169,7 @@ class AudioExtractionWorkflow:
             try:
                 await workflow.execute_activity(
                     audio_extraction_activities.cleanup_temp_files_activity,
-                    request.video_id,
+                    args=[request.video_id],
                     start_to_close_timeout=timedelta(minutes=1)
                 )
             except Exception as cleanup_error:
@@ -208,7 +206,7 @@ class AudioExtractionWorkflow:
             # For now, logging the status change
             await workflow.execute_activity(
                 audio_extraction_activities.cleanup_temp_files_activity,  # Placeholder activity
-                f"status_update_{video_id}_{status}",
+                args=[f"status_update_{video_id}_{status}"],
                 start_to_close_timeout=timedelta(seconds=30)
             )
             

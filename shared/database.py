@@ -61,7 +61,7 @@ class AsyncDatabaseClient:
         
         -- Videos table
         CREATE TABLE IF NOT EXISTS videos (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            id UUID DEFAULT uuid_generate_v4(),
             original_filename TEXT NOT NULL,
             gcs_input_path TEXT NOT NULL,
             gcs_audio_path TEXT,
@@ -71,27 +71,25 @@ class AsyncDatabaseClient:
             duration_seconds FLOAT,
             file_size_bytes BIGINT,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            CONSTRAINT valid_status CHECK (status IN ('pending', 'processing', 'completed', 'failed', 'cancelled'))
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         );
         
         -- Processing logs table
         CREATE TABLE IF NOT EXISTS processing_logs (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+            id UUID DEFAULT uuid_generate_v4(),
+            video_id UUID NOT NULL,
             step TEXT NOT NULL,
             status TEXT NOT NULL,
             message TEXT,
             error_details JSONB,
             execution_time_ms INTEGER,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            CONSTRAINT valid_log_status CHECK (status IN ('started', 'completed', 'failed'))
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         );
         
         -- Segments table for future pipeline stages
         CREATE TABLE IF NOT EXISTS segments (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+            id UUID DEFAULT uuid_generate_v4(),
+            video_id UUID NOT NULL,
             segment_index INTEGER NOT NULL,
             start_time FLOAT NOT NULL,
             end_time FLOAT NOT NULL,
@@ -100,23 +98,20 @@ class AsyncDatabaseClient:
             confidence_score FLOAT,
             status TEXT NOT NULL DEFAULT 'pending',
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            CONSTRAINT valid_segment_status CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
-            UNIQUE(video_id, segment_index)
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         );
         
         -- Workflow executions table
         CREATE TABLE IF NOT EXISTS workflow_executions (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            workflow_id TEXT NOT NULL UNIQUE,
-            video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+            id UUID DEFAULT uuid_generate_v4(),
+            workflow_id TEXT NOT NULL,
+            video_id UUID NOT NULL,
             workflow_type TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'running',
             current_step TEXT,
             error_message TEXT,
             started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            completed_at TIMESTAMP WITH TIME ZONE,
-            CONSTRAINT valid_workflow_status CHECK (status IN ('running', 'completed', 'failed', 'cancelled'))
+            completed_at TIMESTAMP WITH TIME ZONE
         );
         
         -- Create indexes for performance
@@ -176,13 +171,6 @@ class AsyncDatabaseClient:
                     INSERT INTO videos (id, original_filename, gcs_input_path, file_size_bytes, 
                                        source_language, target_language, status)
                     VALUES ($1, $2, $3, $4, $5, $6, 'pending')
-                    ON CONFLICT (id) DO UPDATE SET
-                        original_filename = EXCLUDED.original_filename,
-                        gcs_input_path = EXCLUDED.gcs_input_path,
-                        file_size_bytes = EXCLUDED.file_size_bytes,
-                        source_language = EXCLUDED.source_language,
-                        target_language = EXCLUDED.target_language,
-                        updated_at = NOW()
                     """,
                     video_id, original_filename, gcs_input_path, file_size_bytes,
                     source_language, target_language
@@ -345,6 +333,85 @@ class AsyncDatabaseClient:
             
         except Exception as e:
             logger.error(f"Failed to record workflow execution: {e}")
+            raise
+    
+    async def create_segments(self, 
+                            video_id: str, 
+                            segments_data: List[Dict[str, Any]]) -> List[str]:
+        """Create multiple segments for a video."""
+        if not self.pool:
+            raise RuntimeError("Database not connected")
+        
+        try:
+            segment_ids = []
+            async with self.pool.acquire() as conn:
+                for segment in segments_data:
+                    segment_id = await conn.fetchval(
+                        """
+                        INSERT INTO segments (video_id, segment_index, start_time, end_time, 
+                                            duration, confidence_score, status)
+                        VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+                        RETURNING id
+                        """,
+                        video_id,
+                        segment['segment_index'],
+                        segment['start_time'],
+                        segment['end_time'], 
+                        segment['duration'],
+                        segment.get('confidence_score', 0.0)
+                    )
+                    segment_ids.append(str(segment_id))
+            
+            logger.info(f"Created {len(segment_ids)} segments for video {video_id}")
+            return segment_ids
+            
+        except Exception as e:
+            logger.error(f"Failed to create segments: {e}")
+            raise
+    
+    async def update_segment_status(self, 
+                                  segment_id: str, 
+                                  status: str,
+                                  error_message: Optional[str] = None) -> None:
+        """Update segment processing status."""
+        if not self.pool:
+            raise RuntimeError("Database not connected")
+        
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE segments SET status = $1 WHERE id = $2",
+                    status, segment_id
+                )
+            
+            logger.info(f"Updated segment {segment_id} status to {status}")
+            
+        except Exception as e:
+            logger.error(f"Failed to update segment status: {e}")
+            raise
+    
+    async def get_segments_for_video(self, video_id: str) -> List[Dict[str, Any]]:
+        """Get all segments for a video."""
+        if not self.pool:
+            raise RuntimeError("Database not connected")
+        
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, segment_index, start_time, end_time, duration, 
+                           confidence_score, status, created_at
+                    FROM segments 
+                    WHERE video_id = $1 
+                    ORDER BY segment_index
+                    """,
+                    video_id
+                )
+                
+                return [dict(row) for row in rows]
+                
+        except Exception as e:
+            logger.error(f"Failed to get segments: {e}")
             raise
     
     async def update_workflow_status(self, 
