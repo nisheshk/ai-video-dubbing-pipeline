@@ -25,6 +25,7 @@ class AsyncGCSClient:
         self.client: Optional[storage.Client] = None
         self.bucket: Optional[storage.Bucket] = None
         self._temp_creds_file: Optional[str] = None  # Track temporary credential file
+        self._instance_creds_path: Optional[str] = None  # Track instance-specific credential path
         
     async def connect(self) -> None:
         """Establish connection to Google Cloud Storage."""
@@ -33,10 +34,21 @@ class AsyncGCSClient:
             await self._setup_authentication()
                 
             # Initialize client in thread pool since it's sync
-            self.client = await asyncio.to_thread(
-                storage.Client, 
-                project=self.config.google_cloud_project
-            )
+            # Create client with explicit credentials to avoid environment variable race conditions
+            if self._instance_creds_path:
+                from google.oauth2 import service_account
+                credentials = service_account.Credentials.from_service_account_file(self._instance_creds_path)
+                self.client = await asyncio.to_thread(
+                    storage.Client,
+                    project=self.config.google_cloud_project,
+                    credentials=credentials
+                )
+            else:
+                # Use default credentials (ADC)
+                self.client = await asyncio.to_thread(
+                    storage.Client, 
+                    project=self.config.google_cloud_project
+                )
             
             self.bucket = self.client.bucket(self.config.gcs_bucket_name)
             
@@ -62,7 +74,9 @@ class AsyncGCSClient:
             # Create local directory if needed
             Path(local_path).parent.mkdir(parents=True, exist_ok=True)
             
-            blob = self.bucket.blob(gcs_path)
+            # Parse GCS path to extract blob name
+            blob_name = self._parse_gcs_path(gcs_path)
+            blob = self.bucket.blob(blob_name)
             
             # Check if blob exists
             blob_exists = await asyncio.to_thread(blob.exists)
@@ -114,7 +128,8 @@ class AsyncGCSClient:
             
             logger.info(f"Uploading {local_path} ({file_size_mb:.1f}MB) to {gcs_path}")
             
-            blob = self.bucket.blob(gcs_path)
+            blob_name = self._parse_gcs_path(gcs_path)
+            blob = self.bucket.blob(blob_name)
             
             # Upload file asynchronously
             await asyncio.to_thread(blob.upload_from_filename, local_path)
@@ -137,7 +152,8 @@ class AsyncGCSClient:
             raise RuntimeError("GCS client not connected. Call connect() first.")
             
         try:
-            blob = self.bucket.blob(gcs_path)
+            blob_name = self._parse_gcs_path(gcs_path)
+            blob = self.bucket.blob(blob_name)
             return await asyncio.to_thread(blob.exists)
         except Exception as e:
             logger.error(f"Error checking file existence {gcs_path}: {e}")
@@ -149,7 +165,8 @@ class AsyncGCSClient:
             raise RuntimeError("GCS client not connected. Call connect() first.")
             
         try:
-            blob = self.bucket.blob(gcs_path)
+            blob_name = self._parse_gcs_path(gcs_path)
+            blob = self.bucket.blob(blob_name)
             await asyncio.to_thread(blob.reload)
             
             return {
@@ -173,7 +190,8 @@ class AsyncGCSClient:
             raise RuntimeError("GCS client not connected. Call connect() first.")
             
         try:
-            blob = self.bucket.blob(gcs_path)
+            blob_name = self._parse_gcs_path(gcs_path)
+            blob = self.bucket.blob(blob_name)
             await asyncio.to_thread(blob.delete)
             logger.info(f"Deleted file: {gcs_path}")
             return True
@@ -226,7 +244,7 @@ class AsyncGCSClient:
         # Check if it's a file path
         if os.path.isfile(creds_value):
             logger.info("Using credential file path")
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_value
+            self._instance_creds_path = creds_value
             return
             
         # Assume it's JSON content
@@ -243,13 +261,16 @@ class AsyncGCSClient:
             if missing_fields:
                 raise ValueError(f"Missing required credential fields: {missing_fields}")
             
-            # Create temporary credential file
-            fd, temp_path = tempfile.mkstemp(suffix='.json', prefix='gcp_creds_')
+            # Create instance-specific temporary credential file to avoid race conditions
+            import time
+            import threading
+            unique_id = f"{int(time.time() * 1000000)}_{threading.current_thread().ident}"
+            fd, temp_path = tempfile.mkstemp(suffix='.json', prefix=f'gcp_creds_{unique_id}_')
             try:
                 with os.fdopen(fd, 'w') as f:
                     json.dump(creds_data, f)
                 self._temp_creds_file = temp_path
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_path
+                self._instance_creds_path = temp_path
                 logger.info("Created temporary credential file from JSON content")
             except Exception:
                 # Clean up file descriptor if json.dump fails
@@ -273,3 +294,24 @@ class AsyncGCSClient:
                 logger.warning(f"Failed to cleanup temporary credential file: {e}")
             finally:
                 self._temp_creds_file = None
+    
+    def _parse_gcs_path(self, gcs_path: str) -> str:
+        """Parse GCS path and extract blob name.
+        
+        Args:
+            gcs_path: Full GCS path (e.g., 'gs://bucket/path/file.txt') or blob name
+            
+        Returns:
+            Blob name within the bucket (e.g., 'path/file.txt')
+        """
+        if gcs_path.startswith('gs://'):
+            # Remove gs:// prefix and bucket name
+            parts = gcs_path[5:].split('/', 1)  # Split on first slash after gs://
+            if len(parts) == 2:
+                bucket_name, blob_name = parts
+                return blob_name
+            else:
+                raise ValueError(f"Invalid GCS path format: {gcs_path}")
+        else:
+            # Assume it's already a blob name
+            return gcs_path

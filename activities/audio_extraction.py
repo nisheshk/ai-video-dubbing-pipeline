@@ -83,7 +83,7 @@ class AudioExtractionActivities:
             raise
     
     @activity.defn 
-    async def validate_video_activity(self, video_path: str, video_id: str) -> Dict[str, Any]:
+    async def validate_video_activity(self, video_path: str, video_id: str, gcs_input_path: str) -> Dict[str, Any]:
         """Validate video file and extract metadata."""
         start_time = time.time()
         
@@ -123,8 +123,40 @@ class AudioExtractionActivities:
             
             duration = time.time() - start_time
             
-            # Log to database
+            # Create video record in database (if it doesn't exist)
             async with get_database_client(self.config) as db:
+                try:
+                    # Check if video record already exists
+                    existing_video = await db.get_video_info(video_id)
+                    if not existing_video:
+                        # Extract original filename from gcs_input_path
+                        # Example: "gs://bucket/video_id/test_video1.mp4" -> "test_video1.mp4"
+                        original_filename = gcs_input_path.split("/")[-1]
+                        
+                        # Create video record with metadata
+                        await db.create_video_record(
+                            video_id=video_id,
+                            original_filename=original_filename,
+                            gcs_input_path=gcs_input_path,
+                            file_size_bytes=metadata['size_bytes'],
+                            source_language="en",  # Default, can be updated later
+                            target_language=None
+                        )
+                        
+                        # Update with duration
+                        await db.update_video_status(
+                            video_id=video_id,
+                            status="processing",
+                            duration_seconds=metadata['duration']
+                        )
+                        activity.logger.info(f"Created video record for {video_id}")
+                    else:
+                        activity.logger.info(f"Video record already exists for {video_id}")
+                except Exception as db_error:
+                    activity.logger.warning(f"Failed to create/update video record: {db_error}")
+                    # Continue processing even if video record creation fails
+                
+                # Log processing step
                 await db.log_processing_step(
                     video_id, "video_validation", "completed",
                     f"Video validated: {metadata['duration']:.1f}s duration",

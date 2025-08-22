@@ -1,6 +1,7 @@
 """Async database client for AI dubbing pipeline."""
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime
@@ -61,7 +62,7 @@ class AsyncDatabaseClient:
         
         -- Videos table
         CREATE TABLE IF NOT EXISTS videos (
-            id UUID DEFAULT uuid_generate_v4(),
+            id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
             original_filename TEXT NOT NULL,
             gcs_input_path TEXT NOT NULL,
             gcs_audio_path TEXT,
@@ -88,7 +89,7 @@ class AsyncDatabaseClient:
         
         -- Segments table for future pipeline stages
         CREATE TABLE IF NOT EXISTS segments (
-            id UUID DEFAULT uuid_generate_v4(),
+            id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
             video_id UUID NOT NULL,
             segment_index INTEGER NOT NULL,
             start_time FLOAT NOT NULL,
@@ -97,6 +98,93 @@ class AsyncDatabaseClient:
             speaker_id TEXT,
             confidence_score FLOAT,
             status TEXT NOT NULL DEFAULT 'pending',
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        
+        -- Transcriptions table for AI dubbing pipeline
+        CREATE TABLE IF NOT EXISTS transcriptions (
+            id UUID DEFAULT uuid_generate_v4(),
+            video_id UUID NOT NULL,
+            segment_id UUID NOT NULL,
+            segment_index INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            language VARCHAR(10),
+            processing_time_seconds FLOAT,
+            api_request_id VARCHAR(100),
+            status TEXT DEFAULT 'pending',
+            error_message TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        
+        -- Translations table for AI dubbing pipeline with dual storage
+        CREATE TABLE IF NOT EXISTS translations (
+            id UUID DEFAULT uuid_generate_v4(),
+            video_id UUID NOT NULL,
+            segment_id UUID NOT NULL,
+            segment_index INTEGER NOT NULL,
+            
+            -- Source data from transcriptions
+            source_text TEXT NOT NULL,
+            source_language VARCHAR(10),
+            target_language VARCHAR(10),
+            
+            -- Google Translate v3 Results (for audit/logging)
+            google_translation TEXT NOT NULL,
+            google_confidence_score FLOAT,
+            google_detected_language VARCHAR(10),
+            google_processing_time_seconds FLOAT,
+            google_api_request_id VARCHAR(100),
+            
+            -- OpenAI Refinement Results (FINAL OUTPUT)
+            openai_refined_translation TEXT NOT NULL,
+            openai_processing_time_seconds FLOAT,
+            openai_model_used VARCHAR(50) DEFAULT 'gpt-4',
+            openai_api_request_id VARCHAR(100),
+            cultural_context TEXT,
+            
+            -- Quality and Processing Metrics
+            translation_quality_score FLOAT,
+            processing_time_total_seconds FLOAT,
+            
+            status TEXT DEFAULT 'pending',
+            error_message TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        
+        -- Voice synthesis table for TTS results
+        CREATE TABLE IF NOT EXISTS voice_synthesis (
+            id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+            video_id UUID NOT NULL,
+            translation_id UUID NOT NULL,  -- Links to translations.id
+            segment_id UUID NOT NULL,
+            segment_index INTEGER NOT NULL,
+            
+            -- Input data from translations
+            source_text TEXT NOT NULL,
+            target_language VARCHAR(10),
+            
+            -- Replicate TTS Configuration
+            voice_id VARCHAR(50) DEFAULT 'Friendly_Person',
+            emotion VARCHAR(20) DEFAULT 'neutral',
+            language_boost VARCHAR(20) DEFAULT 'Automatic',
+            english_normalization BOOLEAN DEFAULT true,
+            
+            -- TTS Results
+            replicate_audio_url TEXT NOT NULL,
+            gcs_audio_path TEXT,
+            audio_duration_seconds FLOAT,
+            processing_time_seconds FLOAT,
+            replicate_request_id VARCHAR(100),
+            
+            -- Audio Quality Metrics
+            audio_quality_score FLOAT,
+            voice_similarity_score FLOAT,
+            
+            status TEXT DEFAULT 'pending',
+            error_message TEXT,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
             updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         );
@@ -120,8 +208,82 @@ class AsyncDatabaseClient:
         CREATE INDEX IF NOT EXISTS idx_processing_logs_video_id ON processing_logs(video_id);
         CREATE INDEX IF NOT EXISTS idx_processing_logs_step_status ON processing_logs(step, status);
         CREATE INDEX IF NOT EXISTS idx_segments_video_id ON segments(video_id);
+        CREATE INDEX IF NOT EXISTS idx_transcriptions_video_id ON transcriptions(video_id);
+        CREATE INDEX IF NOT EXISTS idx_transcriptions_segment_index ON transcriptions(video_id, segment_index);
+        CREATE INDEX IF NOT EXISTS idx_transcriptions_status ON transcriptions(status);
+        CREATE INDEX IF NOT EXISTS idx_translations_video_id ON translations(video_id);
+        CREATE INDEX IF NOT EXISTS idx_translations_segment_index ON translations(video_id, segment_index);
+        CREATE INDEX IF NOT EXISTS idx_translations_status ON translations(status);
+        CREATE INDEX IF NOT EXISTS idx_translations_target_language ON translations(target_language);
+        CREATE INDEX IF NOT EXISTS idx_voice_synthesis_video_id ON voice_synthesis(video_id);
+        CREATE INDEX IF NOT EXISTS idx_voice_synthesis_segment_index ON voice_synthesis(video_id, segment_index);
+        CREATE INDEX IF NOT EXISTS idx_voice_synthesis_status ON voice_synthesis(status);
+        CREATE INDEX IF NOT EXISTS idx_voice_synthesis_translation_id ON voice_synthesis(translation_id);
         CREATE INDEX IF NOT EXISTS idx_workflow_executions_video_id ON workflow_executions(video_id);
         CREATE INDEX IF NOT EXISTS idx_workflow_executions_status ON workflow_executions(status);
+        
+        -- Audio alignments table for Stage 7: Alignment & Pacing
+        CREATE TABLE IF NOT EXISTS audio_alignments (
+            id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+            video_id UUID NOT NULL,
+            segment_id UUID NOT NULL REFERENCES segments(id),
+            voice_synthesis_id UUID NOT NULL REFERENCES voice_synthesis(id),
+            
+            -- Timing Data
+            original_start_time REAL NOT NULL,
+            original_end_time REAL NOT NULL, 
+            original_duration REAL NOT NULL,
+            synthesized_duration REAL NOT NULL,
+            stretch_ratio REAL NOT NULL,
+            
+            -- Alignment Results
+            aligned_audio_gcs_path TEXT NOT NULL,
+            aligned_duration REAL NOT NULL,
+            timing_accuracy_ms REAL,  -- Deviation from target timing
+            
+            -- Quality Metrics
+            alignment_quality_score REAL CHECK (alignment_quality_score >= 0 AND alignment_quality_score <= 1),
+            audio_distortion_score REAL,  -- Measure of time-stretching artifacts
+            
+            status TEXT DEFAULT 'pending',
+            error_message TEXT,
+            processing_time_seconds REAL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+
+        -- Final dubbed videos table for Stage 8: Audio Stitching & Video Muxing
+        CREATE TABLE IF NOT EXISTS dubbed_videos (
+            id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+            video_id UUID NOT NULL REFERENCES videos(id),
+            
+            -- Output Files
+            final_audio_gcs_path TEXT NOT NULL,
+            final_video_gcs_path TEXT NOT NULL,
+            multitrack_video_gcs_path TEXT,  -- Optional multi-track version
+            
+            -- Timing Validation
+            original_video_duration REAL NOT NULL,
+            dubbed_video_duration REAL NOT NULL,
+            duration_accuracy_ms REAL,  -- Should be near 0
+            
+            -- Quality Metrics
+            overall_sync_score REAL CHECK (overall_sync_score >= 0 AND overall_sync_score <= 1),
+            segments_processed INTEGER NOT NULL,
+            segments_successful INTEGER NOT NULL,
+            avg_stretch_ratio REAL,
+            
+            processing_time_seconds REAL,
+            status TEXT DEFAULT 'pending',
+            error_message TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        
+        -- Additional indexes for alignment tables
+        CREATE INDEX IF NOT EXISTS idx_audio_alignments_video_id ON audio_alignments(video_id);
+        CREATE INDEX IF NOT EXISTS idx_audio_alignments_segment_id ON audio_alignments(segment_id);
+        CREATE INDEX IF NOT EXISTS idx_audio_alignments_status ON audio_alignments(status);
+        CREATE INDEX IF NOT EXISTS idx_dubbed_videos_video_id ON dubbed_videos(video_id);
+        CREATE INDEX IF NOT EXISTS idx_dubbed_videos_status ON dubbed_videos(status);
         
         -- Update trigger for videos table
         CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -143,6 +305,18 @@ class AsyncDatabaseClient:
             BEFORE UPDATE ON segments
             FOR EACH ROW
             EXECUTE FUNCTION update_updated_at_column();
+            
+        DROP TRIGGER IF EXISTS update_transcriptions_updated_at ON transcriptions;
+        CREATE TRIGGER update_transcriptions_updated_at
+            BEFORE UPDATE ON transcriptions
+            FOR EACH ROW
+            EXECUTE FUNCTION update_updated_at_column();
+            
+        DROP TRIGGER IF EXISTS update_translations_updated_at ON translations;
+        CREATE TRIGGER update_translations_updated_at
+            BEFORE UPDATE ON translations
+            FOR EACH ROW
+            EXECUTE FUNCTION update_updated_at_column();
         """
         
         try:
@@ -150,8 +324,13 @@ class AsyncDatabaseClient:
                 await conn.execute(schema_sql)
             logger.info("Database schema created successfully")
         except Exception as e:
-            logger.error(f"Failed to create schema: {e}")
-            raise
+            # Check if it's a deadlock or relation already exists error (which is OK)
+            error_msg = str(e).lower()
+            if "deadlock detected" in error_msg or "already exists" in error_msg:
+                logger.info(f"Schema creation skipped (already exists or concurrent creation): {e}")
+            else:
+                logger.error(f"Failed to create schema: {e}")
+                raise
     
     async def create_video_record(self, 
                                  video_id: str,
@@ -227,13 +406,16 @@ class AsyncDatabaseClient:
             raise RuntimeError("Database not connected")
         
         try:
+            # Convert error_details dict to JSON string for PostgreSQL JSONB
+            error_details_json = json.dumps(error_details) if error_details else None
+            
             async with self.pool.acquire() as conn:
                 await conn.execute(
                     """
                     INSERT INTO processing_logs (video_id, step, status, message, error_details, execution_time_ms)
                     VALUES ($1, $2, $3, $4, $5, $6)
                     """,
-                    video_id, step, status, message, error_details, execution_time_ms
+                    video_id, step, status, message, error_details_json, execution_time_ms
                 )
             
             logger.debug(f"Logged {step} {status} for video {video_id}")
@@ -459,7 +641,8 @@ async def get_database_client(config):
     client = AsyncDatabaseClient(config.neon_database_url)
     try:
         await client.connect()
-        await client.create_schema()
+        # Skip schema creation during activity execution to avoid deadlocks
+        # Schema is created once during pipeline initialization
         yield client
     finally:
         await client.disconnect()

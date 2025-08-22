@@ -140,9 +140,9 @@ class SpeechSegmentationRequest(BaseModel):
     
     # VAD Configuration
     vad_threshold: float = Field(default=0.5, description="VAD speech detection threshold")
-    min_speech_duration_ms: int = Field(default=1000, description="Minimum speech segment duration")
-    max_segment_duration_s: int = Field(default=30, description="Maximum segment duration")
-    min_silence_gap_ms: int = Field(default=500, description="Minimum silence gap between segments")
+    min_speech_duration_ms: int = Field(default=1500, description="Minimum speech segment duration")
+    max_segment_duration_s: int = Field(default=90, description="Maximum segment duration")
+    min_silence_gap_ms: int = Field(default=1000, description="Minimum silence gap between segments")
     speech_padding_ms: int = Field(default=50, description="Padding around speech segments")
 
 
@@ -179,6 +179,224 @@ class AudioSegment(BaseModel):
     confidence_score: float = Field(description="VAD confidence score")
     gcs_audio_path: str = Field(description="GCS path to segment audio file")
     status: ProcessingStatus = Field(default=ProcessingStatus.PENDING, description="Processing status")
+
+
+class TranscriptionRequest(BaseModel):
+    """Request for transcribing audio segments."""
+    
+    video_id: str = Field(description="Video identifier")
+    segments: List[Dict[str, Any]] = Field(description="Audio segments to transcribe")
+    
+    # OpenAI Whisper API Configuration
+    model: str = Field(default="whisper-1", description="OpenAI Whisper model")
+    response_format: str = Field(default="json", description="Response format (text, json, srt, verbose_json, vtt)")
+    language: Optional[str] = Field(default=None, description="Language code or auto-detect")
+    prompt: Optional[str] = Field(default=None, description="Optional context prompt")
+    temperature: float = Field(default=0, description="Sampling temperature (0-1)")
+    
+    # Queue Configuration (to avoid loading config inside workflow)
+    transcription_queue: str = Field(description="Queue name for transcription tasks")
+
+
+class TranscriptionResult(BaseModel):
+    """Result from transcribing a single audio segment."""
+    
+    video_id: str = Field(description="Video identifier")
+    segment_id: str = Field(description="Segment identifier")
+    segment_index: int = Field(description="Sequential segment index")
+    text: str = Field(description="Transcribed text")
+    language: Optional[str] = Field(default=None, description="Detected language")
+    processing_time_seconds: float = Field(description="Processing time")
+    api_request_id: Optional[str] = Field(default=None, description="OpenAI API request ID")
+    success: bool = Field(description="Whether transcription succeeded")
+    error_message: str = Field(default="", description="Error message if failed")
+
+
+class ConsolidatedTranscriptionResult(BaseModel):
+    """Result from transcribing all segments of a video."""
+    
+    video_id: str = Field(description="Video identifier")
+    success: bool = Field(description="Whether all transcriptions succeeded")
+    total_segments: int = Field(description="Total number of segments processed")
+    successful_transcriptions: int = Field(description="Number of successful transcriptions")
+    primary_language: str = Field(description="Most common detected language")
+    
+    # Transcription data
+    transcriptions: List[TranscriptionResult] = Field(default_factory=list, description="Individual transcription results")
+    full_transcript: str = Field(description="Complete concatenated transcript")
+    gcs_transcript_path: str = Field(default="", description="GCS path to transcript JSON file")
+    
+    # Quality metrics
+    total_words: int = Field(description="Total word count")
+    language_consistency_score: float = Field(description="Language consistency across segments (0-1)")
+    processing_time_seconds: float = Field(description="Total processing time")
+    api_requests_count: int = Field(description="Number of API requests made")
+    success_rate: float = Field(description="Percentage of successful transcriptions")
+    
+    error_message: str = Field(default="", description="Error message if failed")
+
+
+class TranslationRequest(BaseModel):
+    """Request for translating transcribed segments with cultural refinement."""
+    
+    video_id: str = Field(description="Video identifier")
+    target_language: str = Field(description="Target language code (e.g., 'es', 'fr', 'de')")
+    source_language: Optional[str] = Field(default=None, description="Source language code (auto-detect if None)")
+    cultural_context: str = Field(default="general", description="Cultural context for refinement (general, educational, business, entertainment)")
+    enable_refinement: bool = Field(default=True, description="Enable OpenAI cultural refinement")
+    
+    # Queue Configuration (to avoid loading config inside workflow)
+    translation_queue: str = Field(description="Queue name for translation tasks")
+
+
+class SegmentTranslationResult(BaseModel):
+    """Result from translating a single segment with both Google and OpenAI versions."""
+    
+    video_id: str = Field(description="Video identifier")
+    segment_id: str = Field(description="Segment identifier (UUID)")
+    segment_index: int = Field(description="Sequential segment index")
+    
+    # Source data
+    source_text: str = Field(description="Original transcribed text")
+    source_language: str = Field(description="Source language code")
+    target_language: str = Field(description="Target language code")
+    
+    # Google Translate Results (for audit/logging)
+    google_translation: str = Field(description="Google Translate v3 result")
+    google_confidence_score: Optional[float] = Field(default=None, description="Google translation confidence (0-1)")
+    google_detected_language: Optional[str] = Field(default=None, description="Google detected source language")
+    google_processing_time_seconds: float = Field(description="Google API processing time")
+    google_api_request_id: Optional[str] = Field(default=None, description="Google API request identifier")
+    
+    # OpenAI Refinement Results (FINAL OUTPUT)
+    openai_refined_translation: str = Field(description="OpenAI culturally refined translation")
+    openai_processing_time_seconds: float = Field(description="OpenAI processing time")
+    openai_model_used: str = Field(default="gpt-4", description="OpenAI model used for refinement")
+    openai_api_request_id: Optional[str] = Field(default=None, description="OpenAI API request identifier")
+    cultural_context: str = Field(description="Cultural context used for refinement")
+    
+    # Quality and Processing Metrics
+    translation_quality_score: Optional[float] = Field(default=None, description="Overall translation quality score (0-1)")
+    processing_time_total_seconds: float = Field(description="Total processing time for segment")
+    
+    success: bool = Field(description="Whether translation succeeded")
+    error_message: str = Field(default="", description="Error message if failed")
+
+
+class ConsolidatedTranslationResult(BaseModel):
+    """Result from translating all segments of a video with cultural refinement."""
+    
+    video_id: str = Field(description="Video identifier")
+    source_language: str = Field(description="Source language code")
+    target_language: str = Field(description="Target language code")
+    cultural_context: str = Field(description="Cultural context used")
+    
+    # Processing summary
+    total_segments: int = Field(description="Total number of segments processed")
+    successful_translations: int = Field(description="Number of successful translations")
+    success_rate: float = Field(description="Percentage of successful translations")
+    
+    # Translation results
+    translations: List[SegmentTranslationResult] = Field(default_factory=list, description="Individual segment translation results")
+    
+    # Quality metrics
+    avg_google_confidence: float = Field(description="Average Google Translate confidence score")
+    avg_translation_quality: float = Field(description="Average overall translation quality score")
+    
+    # Processing time breakdown
+    total_processing_time_seconds: float = Field(description="Total processing time for all segments")
+    google_processing_time_seconds: float = Field(description="Total Google API processing time")
+    openai_processing_time_seconds: float = Field(description="Total OpenAI processing time")
+    
+    # Output storage
+    gcs_translation_path: str = Field(default="", description="GCS path to consolidated translation JSON")
+    
+    success: bool = Field(description="Whether overall translation succeeded")
+    error_message: str = Field(default="", description="Error message if failed")
+
+
+class VoiceSynthesisRequest(BaseModel):
+    """Request for synthesizing voice from translated text using Replicate Speech-02-HD."""
+    
+    video_id: str = Field(description="Video identifier")
+    target_language: str = Field(description="Target language code")
+    voice_id: str = Field(default="Friendly_Person", description="Voice ID for synthesis")
+    emotion: str = Field(default="neutral", description="Emotion for voice synthesis (neutral, happy, sad, excited, calm)")
+    language_boost: str = Field(default="Automatic", description="Language boost setting")
+    english_normalization: bool = Field(default=True, description="Enable English text normalization")
+    
+    # Queue Configuration (to avoid loading config inside workflow)
+    voice_synthesis_queue: str = Field(description="Queue name for voice synthesis tasks")
+
+
+class SegmentVoiceSynthesisResult(BaseModel):
+    """Result from synthesizing voice for a single segment."""
+    
+    video_id: str = Field(description="Video identifier")
+    translation_id: str = Field(description="Translation identifier (UUID)")
+    segment_id: str = Field(description="Segment identifier (UUID)")
+    segment_index: int = Field(description="Sequential segment index")
+    
+    # Input data
+    source_text: str = Field(description="OpenAI refined translation text")
+    target_language: str = Field(description="Target language code")
+    
+    # TTS Configuration
+    voice_id: str = Field(description="Voice ID used for synthesis")
+    emotion: str = Field(description="Emotion used for synthesis")
+    language_boost: str = Field(description="Language boost setting used")
+    english_normalization: bool = Field(description="Text normalization setting")
+    
+    # Replicate Results
+    replicate_audio_url: str = Field(description="Replicate delivery URL for generated audio")
+    gcs_audio_path: str = Field(default="", description="GCS path where audio is stored")
+    audio_duration_seconds: Optional[float] = Field(default=None, description="Audio duration in seconds")
+    processing_time_seconds: float = Field(description="Processing time for TTS generation")
+    replicate_request_id: Optional[str] = Field(default=None, description="Replicate API request identifier")
+    
+    # Quality Metrics
+    audio_quality_score: Optional[float] = Field(default=None, description="Audio quality score (0-1)")
+    voice_similarity_score: Optional[float] = Field(default=None, description="Voice consistency score (0-1)")
+    
+    success: bool = Field(description="Whether voice synthesis succeeded")
+    error_message: str = Field(default="", description="Error message if failed")
+
+
+class ConsolidatedVoiceSynthesisResult(BaseModel):
+    """Result from synthesizing voice for all segments of a video."""
+    
+    video_id: str = Field(description="Video identifier")
+    target_language: str = Field(description="Target language code")
+    voice_id: str = Field(description="Voice ID used for synthesis")
+    emotion: str = Field(description="Primary emotion used")
+    
+    # Processing summary
+    total_segments: int = Field(description="Total number of segments processed")
+    successful_synthesis: int = Field(description="Number of successful voice syntheses")
+    success_rate: float = Field(description="Percentage of successful syntheses")
+    
+    # Audio Results
+    voice_segments: List[SegmentVoiceSynthesisResult] = Field(default_factory=list, description="Individual segment synthesis results")
+    
+    # Quality Metrics
+    total_audio_duration: float = Field(description="Total duration of all audio segments")
+    avg_audio_quality: float = Field(description="Average audio quality score")
+    voice_consistency_score: float = Field(description="Voice consistency across segments")
+    
+    # Processing Time
+    total_processing_time_seconds: float = Field(description="Total processing time for all segments")
+    avg_processing_time_per_segment: float = Field(description="Average processing time per segment")
+    
+    # Storage Information
+    gcs_audio_folder: str = Field(default="", description="GCS folder containing audio files")
+    audio_manifest_path: str = Field(default="", description="GCS path to audio manifest JSON")
+    
+    # Cost Estimation
+    estimated_cost: float = Field(description="Estimated cost for voice synthesis")
+    character_count: int = Field(description="Total characters processed")
+    
+    success: bool = Field(description="Whether overall voice synthesis succeeded")
+    error_message: str = Field(default="", description="Error message if failed")
 
 
 class DubbingPipelineRequest(BaseModel):

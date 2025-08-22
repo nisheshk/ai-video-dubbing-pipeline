@@ -60,18 +60,7 @@ class SpeechSegmentationWorkflow:
             
         except Exception as e:
             logger.error(f"Speech segmentation workflow failed for video {request.video_id}: {e}")
-            
-            # Return failed result
-            return SpeechSegmentationResult(
-                video_id=request.video_id,
-                success=False,
-                total_segments=0,
-                total_speech_duration=0.0,
-                processing_time_seconds=0.0,
-                speech_to_silence_ratio=0.0,
-                avg_segment_duration=0.0,
-                error_message=str(e)
-            )
+            raise
 
 
 # Workflow helper functions for integration with main dubbing pipeline

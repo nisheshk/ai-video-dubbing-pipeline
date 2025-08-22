@@ -10,8 +10,10 @@ from temporalio.worker import Worker
 
 from workflows.audio_extraction_workflow import AudioExtractionWorkflow, AudioExtractionMonitorWorkflow  
 from workflows.speech_segmentation_workflow import SpeechSegmentationWorkflow
+from workflows.alignment_stitching_workflow import AlignmentStitchingWorkflow
 from activities.audio_extraction import audio_extraction_activities
 from activities.speech_segmentation import speech_segmentation_activity
+from activities import audio_alignment, audio_stitching
 from config import DubbingConfig
 
 # Configure structured logging for production
@@ -124,7 +126,21 @@ async def main():
     
     logger.info("🚀 Starting AI Dubbing Pipeline Cloud Worker")
     
-    # Load production configuration from current environment
+    # Load production configuration from .env.cloud
+    import os
+    from dotenv import load_dotenv
+    
+    # Load .env.cloud into environment variables so activities can access them
+    if os.path.exists('.env.cloud'):
+        load_dotenv('.env.cloud')
+        logger.info("✓ Loaded .env.cloud environment variables")
+    else:
+        logger.warning("⚠️ .env.cloud file not found")
+    
+    # Explicitly set critical environment variables for activities
+    os.environ['MAX_FILE_SIZE_MB'] = '500'
+    logger.info(f"Set MAX_FILE_SIZE_MB to {os.environ.get('MAX_FILE_SIZE_MB')}")
+    
     config = DubbingConfig.from_env()
     worker_config = CloudWorkerConfig(config)
     
@@ -171,10 +187,17 @@ async def main():
         
         # Create production worker with simplified settings
         logger.info("Creating production Temporal worker...")
+        # Create worker for audio extraction and speech segmentation only
+        # Transcription now uses dedicated workers
         worker = Worker(
             client,
             task_queue=worker_config.task_queue,
-            workflows=[AudioExtractionWorkflow, AudioExtractionMonitorWorkflow, SpeechSegmentationWorkflow],
+            workflows=[
+                AudioExtractionWorkflow, 
+                AudioExtractionMonitorWorkflow, 
+                SpeechSegmentationWorkflow,
+                AlignmentStitchingWorkflow,
+            ],
             activities=[
                 # Audio extraction activities
                 audio_extraction_activities.download_video_activity,
@@ -184,6 +207,14 @@ async def main():
                 audio_extraction_activities.cleanup_temp_files_activity,
                 # Speech segmentation activities
                 speech_segmentation_activity,
+                # Audio alignment activities
+                audio_alignment.load_alignment_data_activity,
+                audio_alignment.align_audio_segment_activity,
+                audio_alignment.generate_silence_activity,
+                # Audio stitching activities
+                audio_stitching.stitch_aligned_audio_activity,
+                audio_stitching.mux_video_with_dubbed_audio_activity,
+                audio_stitching.validate_final_video_activity,
             ]
         )
         
@@ -197,6 +228,7 @@ async def main():
         logger.info(f"   Max Concurrent Activity Tasks: {worker_config.max_concurrent_activity_tasks}")
         logger.info("=" * 80)
         logger.info("🎬 Worker is ready to process audio extraction & speech segmentation workflows...")
+        logger.info("   Note: Transcription uses dedicated workers (worker_transcription.py & worker_consolidation.py)")
         logger.info("   Send SIGTERM for graceful shutdown")
         logger.info("=" * 80)
         

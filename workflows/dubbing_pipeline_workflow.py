@@ -98,12 +98,12 @@ class DubbingPipelineWorkflow:
             segmentation_request = SpeechSegmentationRequest(
                 video_id=request.video_id,
                 gcs_audio_path=audio_result.gcs_audio_url,
-                # Use default VAD configuration, could be customized based on request
-                vad_threshold=0.5,
-                min_speech_duration_ms=1000,
-                max_segment_duration_s=30,
-                min_silence_gap_ms=500,
-                speech_padding_ms=50
+                # Use configuration-driven VAD parameters for longer segments
+                vad_threshold=self.config.speech_vad_threshold,
+                min_speech_duration_ms=self.config.speech_min_duration_ms,
+                max_segment_duration_s=self.config.speech_max_segment_duration_s,
+                min_silence_gap_ms=self.config.speech_min_silence_gap_ms,
+                speech_padding_ms=self.config.speech_padding_ms
             )
             
             segmentation_result = await workflow.execute_child_workflow(
@@ -148,13 +148,9 @@ class DubbingPipelineWorkflow:
             self.processing_status = "failed"
             self.error_message = str(e)
             
-            processing_time = (workflow.now() - start_time).total_seconds()
-            result.processing_time_seconds = processing_time
-            result.error_message = str(e)
-            
             workflow.logger.error(f"Dubbing pipeline failed for video {request.video_id}: {e}")
             
-            return result
+            raise
 
     @workflow.query
     def get_status(self) -> Dict[str, Any]:

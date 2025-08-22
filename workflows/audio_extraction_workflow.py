@@ -77,7 +77,7 @@ class AudioExtractionWorkflow:
             
             validation_result = await workflow.execute_activity(
                 audio_extraction_activities.validate_video_activity,
-                args=[local_video_path, request.video_id],
+                args=[local_video_path, request.video_id, request.gcs_input_path],
                 start_to_close_timeout=timedelta(minutes=2),
                 retry_policy=retry_policy
             )
@@ -155,7 +155,6 @@ class AudioExtractionWorkflow:
             # Handle workflow failure
             self.processing_status = "failed"
             self.error_message = str(e)
-            result.error_message = str(e)
             
             workflow.logger.error(f"Audio extraction failed for {request.video_id}: {e}")
             
@@ -175,7 +174,7 @@ class AudioExtractionWorkflow:
             except Exception as cleanup_error:
                 workflow.logger.warning(f"Cleanup after failure failed: {cleanup_error}")
             
-            return result
+            raise
     
     @workflow.signal
     def get_status(self) -> Dict[str, Any]:
