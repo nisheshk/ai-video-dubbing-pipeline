@@ -103,11 +103,12 @@ async def load_alignment_data_activity(video_id: str) -> Dict[str, Any]:
                     except Exception as calc_error:
                         raise ValueError(f"Invalid synthesized audio duration for segment {segment['id']}: {synthesized_duration}. Failed to calculate from file: {calc_error}")
                 
-                stretch_ratio = original_duration / synthesized_duration
+                # Calculate speed ratio for atempo: synthesized / target (how much to speed up/slow down)
+                speed_ratio = synthesized_duration / original_duration  # For atempo filter
                 
-                # Validate stretch ratio is within safe bounds
-                if not 0.5 <= stretch_ratio <= 2.0:
-                    logger.warning(f"Stretch ratio {stretch_ratio:.2f} outside recommended range for segment {segment['id']}")
+                # Validate speed ratio is within safe bounds (0.5x to 4x speed change)
+                if not 0.25 <= speed_ratio <= 4.0:
+                    logger.warning(f"Speed ratio {speed_ratio:.2f} outside safe range for segment {segment['id']}")
                 
                 alignment_data.append({
                     'segment_id': str(segment['id']),
@@ -117,7 +118,7 @@ async def load_alignment_data_activity(video_id: str) -> Dict[str, Any]:
                     'end_time': segment['end_time'],
                     'original_duration': original_duration,
                     'synthesized_duration': synthesized_duration,
-                    'stretch_ratio': stretch_ratio,
+                    'speed_ratio': speed_ratio,
                     'gcs_audio_path': voice_match['gcs_audio_path']
                 })
             
@@ -171,25 +172,30 @@ async def align_audio_segment_activity(
     
     config = DubbingConfig.from_env()
     segment_id = segment_data['segment_id']
-    stretch_ratio = segment_data['stretch_ratio']
+    
+    # Calculate correct speed ratio for atempo: synthesized_duration / target_duration
+    # This matches the working test script logic
+    target_duration = segment_data['original_duration']  # This is what we want to achieve
+    synthesized_duration = segment_data['synthesized_duration']  # This is what we currently have
+    speed_ratio = synthesized_duration / target_duration  # Speed multiplier for atempo filter
     
     start_time = datetime.now()
     
     try:
-        # Check if stretch ratio is within FFmpeg's supported range [0.5, 100.0]
-        if stretch_ratio < 0.5:
-            logger.warning(f"Stretch ratio {stretch_ratio:.3f} is below FFmpeg minimum (0.5). Clamping to 0.5")
-            stretch_ratio = 0.5
-        elif stretch_ratio > 100.0:
-            logger.warning(f"Stretch ratio {stretch_ratio:.3f} is above FFmpeg maximum (100.0). Clamping to 100.0")
-            stretch_ratio = 100.0
+        # Check if speed ratio is within FFmpeg's supported range [0.5, 100.0]
+        if speed_ratio < 0.5:
+            logger.warning(f"Speed ratio {speed_ratio:.3f} is below FFmpeg minimum (0.5). Clamping to 0.5")
+            speed_ratio = 0.5
+        elif speed_ratio > 100.0:
+            logger.warning(f"Speed ratio {speed_ratio:.3f} is above FFmpeg maximum (100.0). Clamping to 100.0")
+            speed_ratio = 100.0
             
         async with get_database_client(config) as db_client:
             await db_client.log_processing_step(
                 video_id, 
                 f"align_segment_{segment_data['segment_index']}", 
                 "processing",
-                f"Time-stretching segment {segment_id} by ratio {stretch_ratio:.3f}"
+                f"Time-stretching segment {segment_id} by speed {speed_ratio:.3f}x"
             )
             
             # Initialize GCS client
@@ -207,11 +213,40 @@ async def align_audio_segment_activity(
                 # Output aligned audio path
                 aligned_audio_path = temp_path / f"aligned_{segment_id}.wav"
                 
-                # FFmpeg time-stretching command
+                # Build FFmpeg time-stretching command with chained atempo filters for ratios outside 0.5-2.0
+                atempo_filters = []
+                remaining_ratio = speed_ratio
+                
+                # Chain atempo filters to handle any stretch ratio
+                while remaining_ratio > 2.0:
+                    atempo_filters.append("atempo=2.0")
+                    remaining_ratio /= 2.0
+                while remaining_ratio < 0.5:
+                    atempo_filters.append("atempo=0.5")
+                    remaining_ratio *= 2.0  # BUG FIX: was /= 0.5, should be *= 2.0
+                
+                # Add final atempo filter for remaining ratio (with tolerance for floating point precision)
+                if abs(remaining_ratio - 1.0) > 0.001:
+                    atempo_filters.append(f"atempo={remaining_ratio:.6f}")
+                
+                # If no stretching needed, just copy the audio
+                if not atempo_filters:
+                    atempo_filter = "acopy"
+                else:
+                    atempo_filter = ",".join(atempo_filters)
+                
+                # Use only atempo filters to change speed - preserve all content
+                if atempo_filter == "acopy":
+                    # No tempo change needed - audio duration already matches
+                    combined_filter = "acopy"
+                else:
+                    # Apply tempo change to speed up or slow down entire audio content
+                    combined_filter = atempo_filter
+                
                 ffmpeg_cmd = [
                     "ffmpeg", "-y",
                     "-i", str(input_audio_path),
-                    "-filter:a", f"atempo={stretch_ratio}",
+                    "-filter:a", combined_filter,
                     "-acodec", "pcm_s16le",
                     "-ar", "44100",
                     str(aligned_audio_path)
@@ -251,6 +286,18 @@ async def align_audio_segment_activity(
                 timing_accuracy_ms = abs(aligned_duration - target_duration) * 1000
                 
                 logger.info(f"Segment {segment_id}: target={target_duration:.3f}s, aligned={aligned_duration:.3f}s, accuracy={timing_accuracy_ms:.1f}ms")
+                logger.info(f"Segment {segment_id} used atempo filter: {atempo_filter} (speed_ratio={speed_ratio:.3f})")
+                
+                # Warn if timing accuracy is poor (>50ms difference)
+                if timing_accuracy_ms > 50.0:
+                    logger.warning(f"Poor timing accuracy for segment {segment_id}: {timing_accuracy_ms:.1f}ms difference")
+                
+                # Error if timing is very poor (>200ms difference) - indicates a serious problem
+                if timing_accuracy_ms > 200.0:
+                    logger.error(f"CRITICAL: Very poor timing accuracy for segment {segment_id}: {timing_accuracy_ms:.1f}ms difference")
+                    logger.error(f"Original duration: {segment_data['synthesized_duration']:.3f}s → Target: {target_duration:.3f}s → Got: {aligned_duration:.3f}s")
+                    logger.error(f"Speed ratio: {speed_ratio:.6f}, Filter: {atempo_filter}")
+                    # Don't fail the whole pipeline, but flag for investigation
                 
                 # Upload aligned audio to GCS
                 output_filename = f"aligned_segment_{segment_data['segment_index']:03d}.wav"
@@ -261,7 +308,7 @@ async def align_audio_segment_activity(
                 
                 # Calculate quality scores
                 alignment_quality_score = max(0.0, 1.0 - (timing_accuracy_ms / 100.0))  # Degrade linearly after 100ms
-                audio_distortion_score = max(0.0, 1.0 - abs(1.0 - stretch_ratio))  # Penalize extreme stretching
+                audio_distortion_score = max(0.0, 1.0 - abs(1.0 - speed_ratio))  # Penalize extreme speed changes
                 
                 result = {
                     'video_id': video_id,
@@ -272,7 +319,7 @@ async def align_audio_segment_activity(
                     'original_end_time': segment_data['end_time'],
                     'original_duration': target_duration,
                     'synthesized_duration': segment_data['synthesized_duration'],
-                    'stretch_ratio': stretch_ratio,
+                    'speed_ratio': speed_ratio,
                     'aligned_audio_gcs_path': f"gs://{config.gcs_bucket_name}/{output_gcs_path}",
                     'aligned_duration': aligned_duration,
                     'timing_accuracy_ms': timing_accuracy_ms,
@@ -346,7 +393,7 @@ async def _store_alignment_result(config: DubbingConfig, result: Dict[str, Any])
                     result['original_end_time'],
                     result['original_duration'],
                     result['synthesized_duration'],
-                    result['stretch_ratio'],
+                    result['speed_ratio'],  # Database still uses stretch_ratio column name but now stores speed_ratio
                     result['aligned_audio_gcs_path'],
                     result['aligned_duration'],
                     result['timing_accuracy_ms'],
@@ -436,3 +483,46 @@ async def generate_silence_activity(
             'duration': 0.0,
             'error_message': str(e)
         }
+
+
+async def _calculate_audio_duration_from_gcs(gcs_audio_path: str, config: DubbingConfig) -> float:
+    """Calculate audio duration from a GCS audio file using ffprobe."""
+    try:
+        # Initialize GCS client
+        gcs_client = AsyncGCSClient(config)
+        await gcs_client.connect()
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            temp_audio_path = temp_path / "temp_audio.mp3"
+            
+            # Download audio file
+            gcs_path = gcs_audio_path.replace(f"gs://{config.gcs_bucket_name}/", "")
+            await gcs_client.download_file(gcs_path, str(temp_audio_path))
+            
+            # Use ffprobe to get duration
+            duration_cmd = [
+                config.ffprobe_path, "-v", "quiet",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0",
+                str(temp_audio_path)
+            ]
+            
+            process = await asyncio.create_subprocess_exec(
+                *duration_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode != 0:
+                raise RuntimeError(f"ffprobe failed: {stderr.decode()}")
+            
+            duration = float(stdout.decode().strip())
+            logger.debug(f"Calculated audio duration: {duration:.3f}s from {gcs_audio_path}")
+            return duration
+            
+    except Exception as e:
+        logger.error(f"Failed to calculate audio duration from {gcs_audio_path}: {e}")
+        raise

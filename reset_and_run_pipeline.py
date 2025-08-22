@@ -143,10 +143,10 @@ async def validate_video_file(config: DubbingConfig, gcs_input_path: str) -> boo
 
 
 async def run_complete_pipeline(
-    video_id: str = "097ff5e3-ae93-40f6-9d12-9df5b1914eae",  # Test video
+    video_id: str = "08eaaeee-0073-4043-8bb4-2ea490070077",  # Test video
     source_language: str = "en",
     target_language: str = "ne",  # Nepali
-    gcs_input_path: str = "gs://dubbing-pipeline/097ff5e3-ae93-40f6-9d12-9df5b1914eae/test_video1.mp4"
+    gcs_input_path: str = "gs://dubbing-pipeline/08eaaeee-0073-4043-8bb4-2ea490070077/test_video1.mp4"
 ) -> Dict[str, Any]:
     """Run the complete AI dubbing pipeline from start to finish.
     
@@ -593,10 +593,10 @@ async def main():
         
         # Run complete pipeline
         result = await run_complete_pipeline(
-            video_id="097ff5e3-ae93-40f6-9d12-9df5b1914eae",
+            video_id="08eaaeee-0073-4043-8bb4-2ea490070077",
             source_language="en",
             target_language="ne",  # Nepali
-            gcs_input_path="gs://dubbing-pipeline/097ff5e3-ae93-40f6-9d12-9df5b1914eae/test_video1.mp4"
+            gcs_input_path="gs://dubbing-pipeline/08eaaeee-0073-4043-8bb4-2ea490070077/test_video1.mp4"
         )
         
         if result['success']:

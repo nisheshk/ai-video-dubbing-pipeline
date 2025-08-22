@@ -91,16 +91,16 @@ class AlignmentStitchingWorkflow:
             segments_data = alignment_data['alignment_data']
             workflow.logger.info(f"Loaded {len(segments_data)} segments for alignment")
             
-            # Validate stretch ratios
+            # Validate speed ratios
             problematic_segments = [
                 seg for seg in segments_data 
-                if seg['stretch_ratio'] > max_stretch_ratio or seg['stretch_ratio'] < (1.0 / max_stretch_ratio)
+                if seg['speed_ratio'] > max_stretch_ratio or seg['speed_ratio'] < (1.0 / max_stretch_ratio)
             ]
             
             if problematic_segments:
-                workflow.logger.warning(f"{len(problematic_segments)} segments exceed stretch ratio limits")
+                workflow.logger.warning(f"{len(problematic_segments)} segments exceed speed ratio limits")
                 for seg in problematic_segments:
-                    workflow.logger.warning(f"Segment {seg['segment_index']}: ratio={seg['stretch_ratio']:.2f}")
+                    workflow.logger.warning(f"Segment {seg['segment_index']}: speed_ratio={seg['speed_ratio']:.2f}")
             
             # Stage 2: Align audio segments in parallel
             workflow.logger.info("Aligning audio segments...")
@@ -196,12 +196,12 @@ class AlignmentStitchingWorkflow:
             processing_time = (workflow.now() - start_time).total_seconds()
             
             avg_timing_accuracy = sum(r['timing_accuracy_ms'] for r in successful_alignments) / len(successful_alignments)
-            avg_stretch_ratio = sum(r['stretch_ratio'] for r in successful_alignments) / len(successful_alignments)
+            avg_speed_ratio = sum(r['speed_ratio'] for r in successful_alignments) / len(successful_alignments)
             
             # Calculate overall sync score (1.0 is perfect)
             timing_score = max(0.0, 1.0 - (avg_timing_accuracy / 100.0))  # Degrade after 100ms
-            stretch_score = max(0.0, 1.0 - abs(1.0 - avg_stretch_ratio))  # Penalize extreme stretching
-            overall_sync_score = (timing_score + stretch_score) / 2.0
+            speed_score = max(0.0, 1.0 - abs(1.0 - avg_speed_ratio))  # Penalize extreme speed changes
+            overall_sync_score = (timing_score + speed_score) / 2.0
             
             # Compile final result
             result = {
@@ -222,7 +222,7 @@ class AlignmentStitchingWorkflow:
                 
                 # Quality metrics
                 'avg_timing_accuracy_ms': avg_timing_accuracy,
-                'avg_stretch_ratio': avg_stretch_ratio,
+                'avg_speed_ratio': avg_speed_ratio,
                 'overall_sync_score': overall_sync_score,
                 'duration_accuracy_ms': muxing_result.get('duration_accuracy_ms', 0.0),
                 

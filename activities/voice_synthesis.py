@@ -50,16 +50,18 @@ async def load_translations_for_tts_activity(video_id: str, target_language: str
                 f"Loading OpenAI refined translations for {target_language}"
             )
         
-        # Query translations table for OpenAI refined translations
+        # Query translations table with original segment timing data
         async with get_database_client(config) as db_client:
             query = """
-            SELECT id, video_id, segment_id, segment_index,
-                   openai_refined_translation, target_language,
-                   source_text, translation_quality_score
-            FROM translations 
-            WHERE video_id = $1 AND target_language = $2 
-              AND status = 'completed' AND openai_refined_translation IS NOT NULL
-            ORDER BY segment_index ASC
+            SELECT t.id, t.video_id, t.segment_id, t.segment_index,
+                   t.openai_refined_translation, t.target_language,
+                   t.source_text, t.translation_quality_score,
+                   s.start_time, s.end_time, s.duration
+            FROM translations t
+            JOIN segments s ON t.segment_id = s.id 
+            WHERE t.video_id = $1 AND t.target_language = $2 
+              AND t.status = 'completed' AND t.openai_refined_translation IS NOT NULL
+            ORDER BY t.segment_index ASC
             """
             
             if not db_client.pool:
@@ -70,6 +72,7 @@ async def load_translations_for_tts_activity(video_id: str, target_language: str
         
         translations = []
         for row in rows:
+            original_duration = row['end_time'] - row['start_time']
             translation_data = {
                 'translation_id': str(row['id']),
                 'video_id': str(row['video_id']),
@@ -78,7 +81,10 @@ async def load_translations_for_tts_activity(video_id: str, target_language: str
                 'source_text': row['openai_refined_translation'],  # Use refined translation for TTS
                 'target_language': row['target_language'],
                 'original_text': row['source_text'],
-                'quality_score': row['translation_quality_score'] or 0.8
+                'quality_score': row['translation_quality_score'] or 0.8,
+                'start_time': row['start_time'],
+                'end_time': row['end_time'],
+                'target_duration': original_duration  # Target duration for TTS alignment
             }
             translations.append(translation_data)
         
