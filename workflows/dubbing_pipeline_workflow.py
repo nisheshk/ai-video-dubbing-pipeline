@@ -7,14 +7,13 @@ from typing import Dict, Any, Optional
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
-with workflow.unsafe.imports_passed_through():
-    from workflows.audio_extraction_workflow import AudioExtractionWorkflow
-    from workflows.speech_segmentation_workflow import SpeechSegmentationWorkflow
-    from shared.models import (
-        AudioExtractionRequest, AudioExtractionResult,
-        SpeechSegmentationRequest, SpeechSegmentationResult,
-        DubbingPipelineRequest, DubbingPipelineResult
-    )
+from workflows.audio_extraction_workflow import AudioExtractionWorkflow
+from workflows.speech_segmentation_workflow import SpeechSegmentationWorkflow
+from shared.models import (
+    AudioExtractionRequest, AudioExtractionResult,
+    SpeechSegmentationRequest, SpeechSegmentationResult,
+    DubbingPipelineRequest, DubbingPipelineResult
+)
 
 logger = logging.getLogger(__name__)
 

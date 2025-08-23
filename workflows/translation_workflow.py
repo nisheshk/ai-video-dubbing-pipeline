@@ -8,9 +8,8 @@ from typing import List, Optional, Dict, Any
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
-with workflow.unsafe.imports_passed_through():
-    from shared.models import TranslationRequest, ConsolidatedTranslationResult
-    from activities import translation
+from shared.models import TranslationRequest, ConsolidatedTranslationResult
+from activities import translation
 
 logger = logging.getLogger(__name__)
 

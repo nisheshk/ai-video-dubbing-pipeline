@@ -8,9 +8,8 @@ from typing import List, Optional
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
-with workflow.unsafe.imports_passed_through():
-    from shared.models import VoiceSynthesisRequest, ConsolidatedVoiceSynthesisResult, SegmentVoiceSynthesisResult
-    from activities import voice_synthesis
+from shared.models import VoiceSynthesisRequest, ConsolidatedVoiceSynthesisResult, SegmentVoiceSynthesisResult
+from activities import voice_synthesis
 
 logger = logging.getLogger(__name__)
 

@@ -7,11 +7,10 @@ from typing import Dict, Any, Optional
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
-with workflow.unsafe.imports_passed_through():
-    from activities.audio_extraction import audio_extraction_activities
-    from shared.models import AudioExtractionRequest, AudioExtractionResult
-    from shared.database import get_database_client
-    from config import DubbingConfig
+from activities.audio_extraction import audio_extraction_activities
+from shared.models import AudioExtractionRequest, AudioExtractionResult
+from shared.database import get_database_client
+from config import DubbingConfig
 
 
 @workflow.defn
