@@ -144,6 +144,32 @@ tests/
 - Environment variables: `GOOGLE_CLOUD_CREDENTIALS` (JSON) or `GOOGLE_APPLICATION_CREDENTIALS` (file path)
 - Real PostgreSQL database logging (no primary key constraints for testing)
 
+## Pipeline Architecture
+
+### Main Orchestrator: reset_and_run_pipeline.py
+- Starts 14 worker processes across 5 different worker types
+- Executes 6 sequential workflow stages
+- Handles database setup and teardown
+
+### Worker Distribution
+1. **worker_cloud.py** (3 instances) - Handles:
+   - Audio extraction activities
+   - Speech segmentation activities
+   - Audio alignment activities
+   - Audio stitching activities
+2. **worker_transcription.py** (3 instances) - Dedicated transcription processing
+3. **worker_translation.py** (3 instances) - Dedicated translation processing
+4. **worker_voice_synthesis.py** (3 instances) - Dedicated voice synthesis processing
+5. **worker_consolidation.py** (2 instances) - Handles workflow consolidation
+
+### Workflow Files Used
+- audio_extraction_workflow.py - Stage 1
+- speech_segmentation_workflow.py - Stage 2
+- transcription_workflow.py - Stage 3
+- translation_workflow.py - Stage 4
+- voice_synthesis_workflow.py - Stage 5
+- alignment_stitching_workflow.py - Stage 6
+
 ## Pipeline Stages Summary
 1. **Audio Extraction** - Extract clean audio from video
 2. **Speech Segmentation** - Detect speech boundaries (VAD)
