@@ -8,19 +8,20 @@ from typing import Dict, List, Any, Optional
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
-from activities.audio_alignment import (
-    load_alignment_data_activity,
-    align_audio_segment_activity,
-    generate_silence_activity
-)
-from activities.audio_stitching import (
-    stitch_aligned_audio_activity,
-    mux_video_with_dubbed_audio_activity,
-    validate_final_video_activity
-)
-from shared.models import ProcessingStatus
-from shared.database import get_database_client
-from config import DubbingConfig
+with workflow.unsafe.imports_passed_through():
+    from activities.audio_alignment import (
+        load_alignment_data_activity,
+        align_audio_segment_activity,
+        generate_silence_activity
+    )
+    from activities.audio_stitching import (
+        stitch_aligned_audio_activity,
+        mux_video_with_dubbed_audio_activity,
+        validate_final_video_activity
+    )
+    from shared.models import ProcessingStatus
+    from shared.database import get_database_client
+    from config import DubbingConfig
 
 logger = logging.getLogger(__name__)
 

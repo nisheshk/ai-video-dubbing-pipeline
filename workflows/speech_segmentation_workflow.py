@@ -7,8 +7,9 @@ from typing import Optional
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
-from shared.models import SpeechSegmentationRequest, SpeechSegmentationResult
-from activities import speech_segmentation
+with workflow.unsafe.imports_passed_through():
+    from shared.models import SpeechSegmentationRequest, SpeechSegmentationResult
+    from activities import speech_segmentation
 
 logger = logging.getLogger(__name__)
 

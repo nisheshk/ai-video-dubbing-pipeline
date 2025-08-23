@@ -8,12 +8,13 @@ from typing import List, Optional, Dict, Any
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
-from shared.models import TranscriptionRequest, ConsolidatedTranscriptionResult
-from activities.transcription import (
-    load_segments_activity,
-    transcribe_segment_activity,
-    consolidate_transcriptions_activity
-)
+with workflow.unsafe.imports_passed_through():
+    from shared.models import TranscriptionRequest, ConsolidatedTranscriptionResult
+    from activities.transcription import (
+        load_segments_activity,
+        transcribe_segment_activity,
+        consolidate_transcriptions_activity
+    )
 
 logger = logging.getLogger(__name__)
 
