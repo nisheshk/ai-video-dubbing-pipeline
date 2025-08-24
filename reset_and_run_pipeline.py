@@ -143,10 +143,10 @@ async def validate_video_file(config: DubbingConfig, gcs_input_path: str) -> boo
 
 
 async def run_complete_pipeline(
-    video_id: str = "de5b5f5a-f7d6-43a1-af7b-2fb0db0f58fc",  # Test video
+    video_id: str = "0770142a-1a3a-4c65-adef-cfd98b19d0d3",  # Test video
     source_language: str = "en",
     target_language: str = "ne",  # Nepali
-    gcs_input_path: str = "gs://dubbing-pipeline/de5b5f5a-f7d6-43a1-af7b-2fb0db0f58fc/test_video1.mp4"
+    gcs_input_path: str = "gs://dubbing-pipeline/0770142a-1a3a-4c65-adef-cfd98b19d0d3/test_video1.mp4"
 ) -> Dict[str, Any]:
     """Run the complete AI dubbing pipeline from start to finish.
     
@@ -570,6 +570,21 @@ async def main():
     ╚══════════════════════════════════════════════════════════════════╝
     """)
     
+    # Parse command line arguments
+    video_id = sys.argv[1] if len(sys.argv) > 1 else "0770142a-1a3a-4c65-adef-cfd98b19d0d3"
+    file_name = sys.argv[2] if len(sys.argv) > 2 else "test_video1.mp4"
+    target_language = sys.argv[3] if len(sys.argv) > 3 else "es"
+    
+    # Construct GCS path
+    config = DubbingConfig.from_env()
+    gcs_input_path = f"gs://{config.gcs_bucket_name}/{video_id}/{file_name}"
+    
+    logger.info(f"🎬 Pipeline parameters:")
+    logger.info(f"   Video ID: {video_id}")
+    logger.info(f"   File Name: {file_name}")
+    logger.info(f"   Target Language: {target_language}")
+    logger.info(f"   GCS Path: {gcs_input_path}")
+    
     worker_processes = []
     
     try:
@@ -577,9 +592,6 @@ async def main():
         if not await check_prerequisites():
             logger.error("❌ Prerequisites not met. Exiting.")
             return 1
-        
-        # Load configuration
-        config = DubbingConfig.from_env()
         
         # Drop and recreate tables
         await drop_all_tables(config)
@@ -591,12 +603,12 @@ async def main():
             logger.error("❌ Failed to start workers. Cannot run pipeline.")
             return 1
         
-        # Run complete pipeline
+        # Run complete pipeline with dynamic parameters
         result = await run_complete_pipeline(
-            video_id="de5b5f5a-f7d6-43a1-af7b-2fb0db0f58fc",
+            video_id=video_id,
             source_language="en",
-            target_language="ne",  # Nepali
-            gcs_input_path="gs://dubbing-pipeline/de5b5f5a-f7d6-43a1-af7b-2fb0db0f58fc/test_video1.mp4"
+            target_language=target_language,
+            gcs_input_path=gcs_input_path
         )
         
         if result['success']:

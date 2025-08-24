@@ -2,8 +2,14 @@
 
 # AI Dubbing Pipeline - Complete Reset & Run Script
 # This script drops all tables, recreates schema, and runs the entire pipeline
+# Usage: ./run_complete_pipeline.sh [video_id] [file_name] [target_language]
 
 set -e  # Exit on any error
+
+# Parse command line arguments
+VIDEO_ID=${1:-"a82c5c2a-3099-476d-937b-caf03bcc4043"}
+FILE_NAME=${2:-"test_video1.mp4"}
+TARGET_LANGUAGE=${3:-"es"}
 
 echo "=========================================="
 echo "   AI DUBBING PIPELINE - COMPLETE RUN"  
@@ -53,7 +59,9 @@ chmod +x reset_and_run_pipeline.py
 
 echo ""
 echo "🚀 Starting complete AI dubbing pipeline..."
-echo "📺 Video: a82c5c2a-3099-476d-937b-caf03bcc4043 (en → es)"
+echo "📺 Video ID: $VIDEO_ID"
+echo "📄 File Name: $FILE_NAME"
+echo "🌍 Target Language: $TARGET_LANGUAGE"
 echo ""
 echo "Pipeline stages:"
 echo "  1. 🗑️  Drop all database tables"
@@ -80,8 +88,8 @@ echo ""
 echo "▶️  Starting pipeline execution..."
 echo "========================================"
 
-# Run the Python pipeline script
-python reset_and_run_pipeline.py
+# Run the Python pipeline script with video parameters
+python reset_and_run_pipeline.py "$VIDEO_ID" "$FILE_NAME" "$TARGET_LANGUAGE"
 
 # Check exit code
 exit_code=$?
